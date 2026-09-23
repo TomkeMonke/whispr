@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{Manager, State};
 
 use audio::Recorder;
 use settings::Settings;

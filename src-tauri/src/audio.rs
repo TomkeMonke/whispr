@@ -25,7 +25,12 @@ pub const TARGET_RATE: u32 = 16_000;
 const MIN_DURATION_SECS: f32 = 0.25;
 
 /// Peak below this across the whole clip means the mic captured nothing useful.
-const SILENCE_PEAK: f32 = 0.004;
+///
+/// Measured noise floor on a quiet room with the built-in array mic was 0.0037,
+/// and speech peaks land around 0.1-0.5, so this sits roughly 4x above the floor
+/// and well under an order of magnitude below even a soft talker. Set any closer
+/// to the floor and silent clips start slipping through into paid API calls.
+const SILENCE_PEAK: f32 = 0.015;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
@@ -560,6 +565,69 @@ mod tests {
             captured.to_wav_16k(),
             Err(AudioError::TooShort)
         ));
+    }
+
+    /// Opens the real default microphone, so it is not part of the normal run.
+    /// `cargo test --lib -- --ignored capture_from_real_microphone --nocapture`
+    #[test]
+    #[ignore = "needs a microphone"]
+    fn capture_from_real_microphone() {
+        use std::io::Write;
+
+        let devices = list_input_devices();
+        println!("input devices ({}):", devices.len());
+        for (i, d) in devices.iter().enumerate() {
+            println!("  {}{}", if i == 0 { "* " } else { "  " }, d);
+        }
+        println!("  (* = system default, which is the one being used)\n");
+
+        let recorder = Recorder::new();
+        recorder
+            .start(None)
+            .expect("could not open the default input device");
+
+        // Give the tester time to actually start talking.
+        for n in (1..=3).rev() {
+            print!("\rstarting in {n}... ");
+            std::io::stdout().flush().ok();
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        println!("\rSPEAK NOW - recording 3 seconds");
+        std::io::stdout().flush().ok();
+
+        // Drop the countdown audio so only the spoken part is measured.
+        let _ = recorder.stop();
+        recorder.start(None).expect("could not reopen the device");
+
+        std::thread::sleep(std::time::Duration::from_millis(3000));
+        let level_while_live = recorder.level();
+        println!("done");
+
+        let captured = recorder.stop().expect("stop failed");
+        println!(
+            "captured {} samples @ {} Hz = {:.2}s, peak {:.4}, level at stop {:.4}",
+            captured.mono.len(),
+            captured.sample_rate,
+            captured.duration_secs(),
+            captured.peak(),
+            level_while_live,
+        );
+
+        assert!(!captured.mono.is_empty(), "no samples arrived from the device");
+        assert!(
+            captured.duration_secs() > 2.0,
+            "expected ~3s, got {:.2}s - callbacks are not firing",
+            captured.duration_secs()
+        );
+
+        match captured.to_wav_16k() {
+            Ok(wav) => println!("encoded {} bytes of 16 kHz mono wav", wav.len()),
+            Err(AudioError::Silent) => {
+                println!("device works but captured silence - check the mic is not muted")
+            }
+            Err(e) => panic!("wav encoding failed: {e}"),
+        }
+        assert!(!recorder.is_recording(), "recorder did not return to idle");
     }
 
     #[test]
