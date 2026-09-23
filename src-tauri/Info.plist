@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS-only. Tauri merges this into the bundled Info.plist; it is ignored on
+  Windows. Without the microphone usage string macOS kills the app the first
+  time it opens an input stream, rather than showing a permission prompt.
+-->
+<plist version="1.0">
+  <dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>whispr records your voice so it can transcribe what you say.</string>
+  </dict>
+</plist>

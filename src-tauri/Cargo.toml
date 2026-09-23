@@ -1,0 +1,60 @@
+[package]
+name = "whispr"
+version = "0.1.0"
+description = "Personal dictation app - local Whisper + Groq cloud"
+authors = ["tomek"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "whispr_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# audio capture + wav encoding.
+# Resampling is hand-rolled in audio.rs: rubato 5 is chunk/delay oriented, which is
+# more bookkeeping (and more transitive deps) than a one-shot whole-clip convert needs.
+cpal = "0.18.2"
+hound = "3.5.1"
+
+# groq client. native-tls = SChannel on Windows, Security.framework on macOS.
+# NB: in reqwest 0.13 the `default-tls` feature means rustls+aws-lc-rs, which
+# drags in a CMake/NASM build step. `native-tls` is what keeps the build toolless.
+reqwest = { version = "0.13.5", default-features = false, features = [
+    "json",
+    "multipart",
+    "native-tls",
+    "http2",
+] }
+
+thiserror = "2.0.20"
+chrono = "0.4.45"
+
+# API key lives in the OS credential store, never on disk.
+# NB: the `keyring` v4 crate is only a v1-compat/CLI shim. Its own docs say apps
+# that pick their own stores should link keyring-core plus the store directly.
+keyring-core = "1.0.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-native-keyring-store = "1.1.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = "1.0.2"
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

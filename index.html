@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>whispr</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <h1>whispr</h1>
+        <button id="settings-toggle" class="icon-btn" type="button" title="Settings">
+          settings
+        </button>
+      </header>
+
+      <section id="settings" class="settings" hidden>
+        <label class="field">
+          <span>Groq API key</span>
+          <div class="inline">
+            <input
+              id="api-key"
+              type="password"
+              placeholder="gsk_..."
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button id="save-key" class="btn" type="button">Save</button>
+          </div>
+          <small id="key-status" class="hint"></small>
+          <small class="hint">
+            No key yet?
+            <a href="#" id="groq-link">Create one at console.groq.com</a> - the free
+            tier covers 8 hours of audio a day.
+          </small>
+        </label>
+
+        <label class="field">
+          <span>Microphone</span>
+          <select id="mic"></select>
+        </label>
+
+        <label class="field">
+          <span>Model</span>
+          <select id="model">
+            <option value="whisper-large-v3-turbo">
+              Turbo - fast, cheap (default)
+            </option>
+            <option value="whisper-large-v3">
+              Large v3 - slower, most accurate
+            </option>
+          </select>
+        </label>
+      </section>
+
+      <section class="stage">
+        <button id="record" class="record" type="button" aria-label="Start recording">
+          <span id="level-ring" class="ring"></span>
+          <span class="dot"></span>
+        </button>
+        <p id="status" class="status">Loading...</p>
+        <p class="hint kbd-hint">Space to start and stop</p>
+      </section>
+
+      <section class="result">
+        <textarea
+          id="transcript"
+          placeholder="Your transcript will appear here"
+          spellcheck="false"
+        ></textarea>
+        <div class="result-actions">
+          <span id="meta" class="hint"></span>
+          <button id="copy" class="btn" type="button" disabled>Copy</button>
+        </div>
+      </section>
+
+      <p id="error" class="error" hidden></p>
+    </main>
+  </body>
+</html>
