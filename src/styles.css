@@ -28,6 +28,12 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute is only a user-agent `display: none`, so any class
+   that sets `display` (like .settings) silently overrides it. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
