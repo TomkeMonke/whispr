@@ -75,16 +75,16 @@ impl Captured {
         self.mono.iter().fold(0.0f32, |m, s| m.max(s.abs()))
     }
 
-    /// Resample to 16 kHz and encode as 16-bit PCM WAV, ready to upload.
-    pub fn to_wav_16k(&self) -> Result<Vec<u8>, AudioError> {
+    /// Gate out mis-triggers and silence, then resample to 16 kHz. The local
+    /// engine takes these samples as-is; the cloud path encodes them to WAV.
+    pub fn to_pcm_16k(&self) -> Result<Vec<f32>, AudioError> {
         if self.duration_secs() < MIN_DURATION_SECS {
             return Err(AudioError::TooShort);
         }
         if self.peak() < SILENCE_PEAK {
             return Err(AudioError::Silent);
         }
-        let resampled = resample_mono(&self.mono, self.sample_rate, TARGET_RATE);
-        encode_wav_16k_mono(&resampled)
+        Ok(resample_mono(&self.mono, self.sample_rate, TARGET_RATE))
     }
 }
 
@@ -562,7 +562,7 @@ mod tests {
             sample_rate: 48_000,
         };
         assert!(matches!(
-            captured.to_wav_16k(),
+            captured.to_pcm_16k(),
             Err(AudioError::TooShort)
         ));
     }
@@ -620,7 +620,7 @@ mod tests {
             captured.duration_secs()
         );
 
-        match captured.to_wav_16k() {
+        match captured.to_pcm_16k().and_then(|pcm| encode_wav_16k_mono(&pcm)) {
             Ok(wav) => println!("encoded {} bytes of 16 kHz mono wav", wav.len()),
             Err(AudioError::Silent) => {
                 println!("device works but captured silence - check the mic is not muted")
@@ -636,6 +636,6 @@ mod tests {
             mono: vec![0.0; 48_000],
             sample_rate: 48_000,
         };
-        assert!(matches!(captured.to_wav_16k(), Err(AudioError::Silent)));
+        assert!(matches!(captured.to_pcm_16k(), Err(AudioError::Silent)));
     }
 }

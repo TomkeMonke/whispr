@@ -1,11 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 type Phase = "idle" | "recording" | "transcribing";
 
+type Engine = "cloud" | "local";
+
 interface Settings {
   microphone: string | null;
+  engine: Engine;
   model: string;
+  local_model: string;
   language: string;
 }
 
@@ -13,12 +18,28 @@ interface Transcript {
   text: string;
   duration_secs: number;
   engine: string;
+  fallback_reason: string | null;
   audio_path: string | null;
 }
 
 interface Status {
   recording: boolean;
   has_api_key: boolean;
+  has_local_model: boolean;
+  gpu: boolean;
+}
+
+interface ModelInfo {
+  id: string;
+  label: string;
+  size_bytes: number;
+  downloaded: boolean;
+}
+
+interface DownloadProgress {
+  id: string;
+  received: number;
+  total: number;
 }
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -43,15 +64,26 @@ const els = {
   groqLink: $<HTMLAnchorElement>("groq-link"),
   mic: $<HTMLSelectElement>("mic"),
   model: $<HTMLSelectElement>("model"),
+  engine: $<HTMLSelectElement>("engine"),
+  localModel: $<HTMLSelectElement>("local-model"),
+  downloadModel: $<HTMLButtonElement>("download-model"),
+  downloadProgress: $<HTMLProgressElement>("download-progress"),
+  localStatus: $<HTMLElement>("local-status"),
 };
 
 let phase: Phase = "idle";
 let settings: Settings = {
   microphone: null,
+  engine: "cloud",
   model: "whisper-large-v3-turbo",
+  local_model: "small.en",
   language: "en",
 };
+let models: ModelInfo[] = [];
+let downloading = false;
 let levelTimer: number | undefined;
+
+const megabytes = (bytes: number) => `${Math.round(bytes / 1_000_000)} MB`;
 
 // --- rendering -------------------------------------------------------------
 
@@ -126,9 +158,12 @@ async function toggleRecording() {
     const result = await invoke<Transcript>("stop_and_transcribe");
     els.transcript.value = result.text;
     els.copy.disabled = result.text.length === 0;
-    els.meta.textContent = `${result.duration_secs.toFixed(
-      1,
-    )}s - ${result.engine}`;
+    const fallback = result.fallback_reason
+      ? ` (fell back: ${result.fallback_reason})`
+      : "";
+    els.meta.textContent = `${result.duration_secs.toFixed(1)}s - ${
+      result.engine
+    }${fallback}`;
     els.status.textContent = result.text ? "Done" : "Nothing came back";
   } catch (e) {
     showError(String(e));
@@ -152,16 +187,27 @@ async function copyTranscript() {
   }
 }
 
-async function refreshKeyStatus() {
+async function refreshStatus() {
   const s = await invoke<Status>("status");
   els.keyStatus.textContent = s.has_api_key
     ? "A key is saved in your OS keychain"
-    : "No key saved yet - recording will fail without one";
+    : "No key saved - the cloud engine is off until you add one";
   els.keyStatus.classList.toggle("warn", !s.has_api_key);
-  if (!s.has_api_key && phase === "idle") {
-    els.status.textContent = "Add a Groq API key in settings to begin";
-  } else if (phase === "idle") {
-    els.status.textContent = "Ready";
+
+  if (!downloading) {
+    const model = models.find((m) => m.id === settings.local_model);
+    els.localStatus.textContent = s.has_local_model
+      ? `Downloaded - runs on the ${s.gpu ? "GPU" : "CPU"}`
+      : `Not downloaded - ${megabytes(model?.size_bytes ?? 0)}, one time`;
+    els.localStatus.classList.toggle("warn", !s.has_local_model);
+    els.downloadModel.hidden = s.has_local_model;
+  }
+
+  if (phase === "idle") {
+    els.status.textContent =
+      s.has_api_key || s.has_local_model
+        ? "Ready"
+        : "Download a local model or add a Groq key in settings";
   }
 }
 
@@ -175,7 +221,7 @@ async function saveApiKey() {
   try {
     await invoke("save_api_key", { key });
     els.apiKey.value = "";
-    await refreshKeyStatus();
+    await refreshStatus();
   } catch (e) {
     showError(String(e));
   }
@@ -199,14 +245,53 @@ async function loadMicrophones() {
   els.mic.value = settings.microphone ?? "";
 }
 
+async function loadLocalModels() {
+  models = await invoke<ModelInfo[]>("local_models");
+  els.localModel.innerHTML = "";
+  for (const m of models) {
+    const opt = document.createElement("option");
+    opt.value = m.id;
+    opt.textContent = `${m.label} (${megabytes(m.size_bytes)})`;
+    els.localModel.append(opt);
+  }
+  els.localModel.value = settings.local_model;
+}
+
+async function downloadLocalModel() {
+  const id = els.localModel.value;
+  clearError();
+  downloading = true;
+  els.downloadModel.disabled = true;
+  els.localModel.disabled = true;
+  els.downloadProgress.value = 0;
+  els.downloadProgress.hidden = false;
+  els.localStatus.classList.remove("warn");
+  els.localStatus.textContent = "Starting download...";
+  try {
+    await invoke("download_model", { id });
+    await loadLocalModels();
+  } catch (e) {
+    showError(String(e));
+  } finally {
+    downloading = false;
+    els.downloadModel.disabled = false;
+    els.localModel.disabled = false;
+    els.downloadProgress.hidden = true;
+    await refreshStatus();
+  }
+}
+
 async function persistSettings() {
   settings = {
     ...settings,
     microphone: els.mic.value || null,
+    engine: els.engine.value as Engine,
     model: els.model.value,
+    local_model: els.localModel.value,
   };
   try {
     await invoke("save_settings", { settings });
+    await refreshStatus();
   } catch (e) {
     showError(String(e));
   }
@@ -219,6 +304,16 @@ els.copy.addEventListener("click", copyTranscript);
 els.saveKey.addEventListener("click", saveApiKey);
 els.mic.addEventListener("change", persistSettings);
 els.model.addEventListener("change", persistSettings);
+els.engine.addEventListener("change", persistSettings);
+els.localModel.addEventListener("change", persistSettings);
+els.downloadModel.addEventListener("click", downloadLocalModel);
+
+listen<DownloadProgress>("model-download", ({ payload }) => {
+  els.downloadProgress.value = payload.received / payload.total;
+  els.localStatus.textContent = `Downloading... ${megabytes(
+    payload.received,
+  )} of ${megabytes(payload.total)}`;
+});
 
 els.apiKey.addEventListener("keydown", (e) => {
   if (e.key === "Enter") saveApiKey();
@@ -250,8 +345,10 @@ async function init() {
   try {
     settings = await invoke<Settings>("get_settings");
     els.model.value = settings.model;
+    els.engine.value = settings.engine;
     await loadMicrophones();
-    await refreshKeyStatus();
+    await loadLocalModels();
+    await refreshStatus();
     setPhase("idle");
   } catch (e) {
     showError(String(e));

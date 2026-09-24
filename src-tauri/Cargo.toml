@@ -45,6 +45,16 @@ chrono = "0.4.45"
 # that pick their own stores should link keyring-core plus the store directly.
 keyring-core = "1.0.0"
 
+# local engine: whisper.cpp. Its build needs CMake, plus LLVM for bindgen.
+whisper-rs = "0.16.0"
+# verifies downloaded models against their published hashes
+sha2 = "0.11.0"
+
+[features]
+# GPU build for the NVIDIA desktop: `npm run tauri:cuda`. Needs the CUDA toolkit.
+# The laptop builds without it and runs whisper.cpp on the CPU.
+cuda = ["whisper-rs/cuda"]
+
 [target.'cfg(windows)'.dependencies]
 windows-native-keyring-store = "1.1.0"
 

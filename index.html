@@ -19,6 +19,25 @@
 
       <section id="settings" class="settings" hidden>
         <label class="field">
+          <span>Engine</span>
+          <select id="engine">
+            <option value="cloud">Groq cloud - fastest, needs a key</option>
+            <option value="local">Local - private, works offline</option>
+          </select>
+          <small class="hint">The other engine takes over if this one fails</small>
+        </label>
+
+        <div class="field">
+          <span>Local model</span>
+          <div class="inline">
+            <select id="local-model"></select>
+            <button id="download-model" class="btn" type="button">Download</button>
+          </div>
+          <progress id="download-progress" max="1" value="0" hidden></progress>
+          <small id="local-status" class="hint"></small>
+        </div>
+
+        <label class="field">
           <span>Groq API key</span>
           <div class="inline">
             <input
@@ -44,7 +63,7 @@
         </label>
 
         <label class="field">
-          <span>Model</span>
+          <span>Groq model</span>
           <select id="model">
             <option value="whisper-large-v3-turbo">
               Turbo - fast, cheap (default)

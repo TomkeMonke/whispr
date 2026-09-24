@@ -5,12 +5,13 @@ as the offline fallback. Windows and macOS.
 
 ## Status
 
-**M1 - cloud-only skeleton.** Record in the window, transcribe via Groq, read the
-text back.
+**M1 + M3.** Record in the window, transcribe with Groq or a local Whisper model,
+read the text back. M3 landed before M2 so there is a working engine that needs
+no API key.
 
 - [x] M1 - window app, cpal capture, Groq transcription
+- [x] M3 - local Whisper (whisper.cpp), model download, fallback routing
 - [ ] M2 - global hotkey, overlay, auto-paste, tray
-- [ ] M3 - local Whisper fallback, model download, offline detection
 - [ ] Later - LLM cleanup pass, custom vocabulary
 - [ ] Later - macOS pass
 
@@ -26,6 +27,17 @@ text back.
   winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
   ```
 
+- **CMake and LLVM**, for whisper.cpp and its bindgen step:
+
+  ```
+  winget install -e --id Kitware.CMake
+  winget install -e --id LLVM.LLVM
+  ```
+
+  If bindgen cannot find libclang, set `LIBCLANG_PATH=C:\Program Files\LLVM\bin`.
+
+- **Optional, NVIDIA GPU:** the CUDA toolkit, then build with `--features cuda`.
+
 - **macOS:** Xcode command line tools.
 
 Keep the checkout out of any path containing a space. Some build scripts in the
@@ -38,33 +50,53 @@ npm install
 npm run tauri dev
 ```
 
-Then open settings and paste a Groq API key from
-[console.groq.com/keys](https://console.groq.com/keys). The free tier covers
-28,800 audio-seconds a day, which is far more than personal dictation uses.
+Then open settings and either download a local model or paste a Groq API key
+from [console.groq.com/keys](https://console.groq.com/keys). The Groq free tier
+covers 28,800 audio-seconds a day, which is far more than personal dictation uses.
+
+`npm run tauri:cuda` runs the GPU build.
 
 ```
 cd src-tauri && cargo test    # unit tests, no audio hardware needed
+
+# end to end on the local engine: downloads a model into target/models
+WHISPR_TEST_WAV=clip.wav cargo test --lib -- --ignored transcribes_real_speech --nocapture
 ```
 
 ## How it fits together
 
 ```
-mic -> cpal (dedicated thread) -> downmix -> resample 16 kHz -> WAV
-                                                                 |
-                                                    Groq whisper-large-v3-turbo
-                                                                 |
-                                                          postprocess()
-                                                                 |
-                                                            transcript
+mic -> cpal (dedicated thread) -> downmix -> resample 16 kHz
+                                                   |
+                                  route(): primary engine, then the other
+                                   /                              \
+                     Groq whisper-large-v3-turbo           whisper.cpp, local
+                                   \                              /
+                                            postprocess()
+                                                   |
+                                               transcript
 ```
 
 - `audio.rs` - capture, resampling, WAV encoding
-- `groq.rs` - transcription client
+- `groq.rs` - cloud transcription client
+- `local.rs` - local engine, model catalog, checksummed download
 - `secrets.rs` - API key in the OS credential store
 - `settings.rs` - everything else, as JSON in the app config dir
 - `lib.rs` - Tauri commands and the `postprocess` seam
 
 ### Notes on a few choices
+
+**Either engine can be primary.** The other takes over when the primary fails in
+a way a retry could fix: offline, rate limited, a server error. A bad key or an
+oversized clip does not fall back, because answering from the other engine would
+hide a problem the user needs to fix. An engine that is not set up (no key, no
+model) is simply skipped.
+
+**Local models are the quantised English-only builds.** Measured on a 6 s clip on
+a desktop CPU: `base.en` 1.2 s but misheard a phrase, `small.en` 4.2 s and
+exact. Small is the CPU default; Turbo is the default for a CUDA build. Every
+download is checked against the SHA-256 Hugging Face publishes before it is
+renamed into place.
 
 **Audio is captured in Rust, not the webview.** It keeps working when the window
 is hidden, which M2's global hotkey depends on, and it sidesteps the WebView2
