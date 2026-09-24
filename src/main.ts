@@ -86,6 +86,8 @@ const els = {
   saveHotkey: $<HTMLButtonElement>("save-hotkey"),
   hotkeyStatus: $<HTMLElement>("hotkey-status"),
   autoPaste: $<HTMLInputElement>("auto-paste"),
+  autostart: $<HTMLInputElement>("autostart"),
+  autostartHint: $<HTMLElement>("autostart-hint"),
   kbdHint: $<HTMLElement>("kbd-hint"),
 };
 
@@ -240,6 +242,26 @@ async function saveHotkey() {
   }
 }
 
+async function loadAutostart() {
+  const enabled = await invoke<boolean | null>("get_autostart");
+  // null: a dev build, where the login entry would point at a throwaway exe.
+  els.autostart.disabled = enabled === null;
+  els.autostart.checked = enabled === true;
+  if (enabled === null) {
+    els.autostartHint.textContent = "Only in the installed app";
+  }
+}
+
+async function toggleAutostart() {
+  clearError();
+  try {
+    await invoke("set_autostart", { enabled: els.autostart.checked });
+  } catch (e) {
+    showError(String(e));
+    els.autostart.checked = !els.autostart.checked;
+  }
+}
+
 async function copyTranscript() {
   const text = els.transcript.value;
   if (!text) return;
@@ -383,6 +405,7 @@ els.engine.addEventListener("change", persistSettings);
 els.localModel.addEventListener("change", persistSettings);
 els.downloadModel.addEventListener("click", downloadLocalModel);
 els.autoPaste.addEventListener("change", persistSettings);
+els.autostart.addEventListener("change", toggleAutostart);
 els.saveHotkey.addEventListener("click", saveHotkey);
 els.hotkey.addEventListener("keydown", (e) => {
   if (e.key === "Enter") saveHotkey();
@@ -432,6 +455,7 @@ async function init() {
     els.autoPaste.checked = settings.auto_paste;
     await loadMicrophones();
     await loadLocalModels();
+    await loadAutostart();
     await refreshStatus();
     setPhase("idle");
   } catch (e) {

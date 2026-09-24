@@ -56,6 +56,10 @@ arboard = "3.6.1"
 # default features pull in X11 for Linux; whispr targets Windows and macOS
 enigo = { version = "0.6.1", default-features = false }
 
+# start at login, and one running copy (a second would fight over the hotkey)
+tauri-plugin-autostart = "2.5.1"
+tauri-plugin-single-instance = "2.4.5"
+
 [features]
 # GPU build. `npm run tauri dev/build` turns it on by itself when the machine has
 # an NVIDIA GPU and the CUDA toolkit (scripts/tauri.mjs); WHISPR_GPU=0/1 overrides.

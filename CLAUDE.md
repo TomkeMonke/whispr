@@ -71,6 +71,11 @@ Keep the checkout out of any path with a space (the laptop user folder is
 6. `cd src-tauri && cargo test --lib` should pass (the ignored tests need a
    microphone or a model download; see README).
 
+7. **Install it for daily use.** Stop `tauri dev` first (it holds the
+   hotkey), then `npm run tauri build` and run the installer from
+   `src-tauri/target/release/bundle/nsis/`. tomek then ticks "Start when you
+   log in" in settings. Settings, the Groq key and models carry over from dev.
+
 ## Gotchas
 
 - **Port 1420 in use**: a previous `tauri dev` left Vite running. Find the

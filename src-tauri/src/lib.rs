@@ -23,6 +23,7 @@ use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use audio::Recorder;
@@ -430,6 +431,34 @@ fn clear_api_key() -> Result<(), String> {
     secrets::clear().map_err(|e| e.to_string())
 }
 
+/// Whether whispr starts at login. `None` in a dev build: the registration
+/// points at the running executable, which in dev is a throwaway build under
+/// target/, so the option only exists in the installed app.
+#[tauri::command]
+fn get_autostart(app: AppHandle) -> Result<Option<bool>, String> {
+    if cfg!(debug_assertions) {
+        return Ok(None);
+    }
+    app.autolaunch()
+        .is_enabled()
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    if cfg!(debug_assertions) {
+        return Err("start at login only works in the installed app".into());
+    }
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    }
+    .map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Recording safety net
 // ---------------------------------------------------------------------------
@@ -508,9 +537,22 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Passed by the login entry, so a start at login goes straight to the tray.
+const AUTOSTART_ARG: &str = "--autostart";
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // First, so a second launch exits before anything else starts. It
+        // would otherwise fail to register the hotkey the first one holds.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app)
+        }))
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .arg(AUTOSTART_ARG)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -583,6 +625,12 @@ pub fn run() {
             }
 
             build_tray(app)?;
+
+            // The window starts hidden (tauri.conf.json). A normal launch shows
+            // it; a start at login leaves whispr in the tray with the hotkey armed.
+            if !std::env::args().any(|a| a == AUTOSTART_ARG) {
+                show_main_window(app.handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -598,6 +646,8 @@ pub fn run() {
             save_settings,
             save_api_key,
             clear_api_key,
+            get_autostart,
+            set_autostart,
         ])
         .run(tauri::generate_context!())
         .expect("error while running whispr");

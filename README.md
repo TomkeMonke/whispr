@@ -74,6 +74,23 @@ cd src-tauri && cargo test    # unit tests, no audio hardware needed
 WHISPR_TEST_WAV=clip.wav cargo test --lib -- --ignored transcribes_real_speech --nocapture
 ```
 
+## Installing
+
+```
+npm run tauri build
+```
+
+This builds a per-user installer (no admin prompt) at
+`src-tauri/target/release/bundle/nsis/whispr_<version>_x64-setup.exe`, picking
+the GPU or CPU engine the same way `tauri dev` does. Build it on the machine
+that will run it: a GPU build needs that machine's CUDA install. The installed
+app shares settings, the saved key and downloaded models with the dev build.
+
+In settings, "Start when you log in" adds whispr to the login items; it then
+starts straight into the tray with the hotkey ready. The option is greyed out in
+dev builds, since the entry would point at a throwaway executable. Launching
+whispr while it is already running just opens the running one's window.
+
 ## How it fits together
 
 ```
