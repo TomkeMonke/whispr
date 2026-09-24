@@ -36,7 +36,7 @@ no API key.
 
   If bindgen cannot find libclang, set `LIBCLANG_PATH=C:\Program Files\LLVM\bin`.
 
-- **Optional, NVIDIA GPU:** the CUDA toolkit, then build with `--features cuda`.
+- **Optional, NVIDIA GPU:** the CUDA toolkit. Nothing else to do - see below.
 
 - **macOS:** Xcode command line tools.
 
@@ -54,7 +54,11 @@ Then open settings and either download a local model or paste a Groq API key
 from [console.groq.com/keys](https://console.groq.com/keys). The Groq free tier
 covers 28,800 audio-seconds a day, which is far more than personal dictation uses.
 
-`npm run tauri:cuda` runs the GPU build.
+`npm run tauri dev` and `npm run tauri build` pick the engine build for the
+machine: with an NVIDIA GPU and the CUDA toolkit they add `--features cuda`,
+otherwise whisper.cpp is built for the CPU. The first line of output says which
+and why. `WHISPR_GPU=0` or `WHISPR_GPU=1` overrides it. Plain `cargo` commands
+skip the detection, so pass `--features cuda` to them yourself.
 
 ```
 cd src-tauri && cargo test    # unit tests, no audio hardware needed

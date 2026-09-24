@@ -51,7 +51,8 @@ whisper-rs = "0.16.0"
 sha2 = "0.11.0"
 
 [features]
-# GPU build for the NVIDIA desktop: `npm run tauri:cuda`. Needs the CUDA toolkit.
+# GPU build. `npm run tauri dev/build` turns it on by itself when the machine has
+# an NVIDIA GPU and the CUDA toolkit (scripts/tauri.mjs); WHISPR_GPU=0/1 overrides.
 # The laptop builds without it and runs whisper.cpp on the CPU.
 cuda = ["whisper-rs/cuda"]
 
