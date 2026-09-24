@@ -12,6 +12,8 @@ interface Settings {
   model: string;
   local_model: string;
   language: string;
+  hotkey: string;
+  auto_paste: boolean;
 }
 
 interface Transcript {
@@ -27,7 +29,18 @@ interface Status {
   has_api_key: boolean;
   has_local_model: boolean;
   gpu: boolean;
+  hotkey_error: string | null;
 }
+
+type Delivery = "pasted" | "copied";
+
+// Hotkey sessions run in Rust, even while another app has focus; these events
+// let the window follow along.
+type DictationEvent =
+  | { phase: "recording" }
+  | { phase: "transcribing" }
+  | { phase: "done"; transcript: Transcript; delivery: Delivery | null }
+  | { phase: "error"; message: string };
 
 interface ModelInfo {
   id: string;
@@ -69,6 +82,11 @@ const els = {
   downloadModel: $<HTMLButtonElement>("download-model"),
   downloadProgress: $<HTMLProgressElement>("download-progress"),
   localStatus: $<HTMLElement>("local-status"),
+  hotkey: $<HTMLInputElement>("hotkey"),
+  saveHotkey: $<HTMLButtonElement>("save-hotkey"),
+  hotkeyStatus: $<HTMLElement>("hotkey-status"),
+  autoPaste: $<HTMLInputElement>("auto-paste"),
+  kbdHint: $<HTMLElement>("kbd-hint"),
 };
 
 let phase: Phase = "idle";
@@ -78,6 +96,8 @@ let settings: Settings = {
   model: "whisper-large-v3-turbo",
   local_model: "small.en",
   language: "en",
+  hotkey: "Ctrl+Shift+Space",
+  auto_paste: true,
 };
 let models: ModelInfo[] = [];
 let downloading = false;
@@ -155,21 +175,68 @@ async function toggleRecording() {
 
   setPhase("transcribing");
   try {
-    const result = await invoke<Transcript>("stop_and_transcribe");
-    els.transcript.value = result.text;
-    els.copy.disabled = result.text.length === 0;
-    const fallback = result.fallback_reason
-      ? ` (fell back: ${result.fallback_reason})`
-      : "";
-    els.meta.textContent = `${result.duration_secs.toFixed(1)}s - ${
-      result.engine
-    }${fallback}`;
-    els.status.textContent = result.text ? "Done" : "Nothing came back";
+    showTranscript(await invoke<Transcript>("stop_and_transcribe"), null);
   } catch (e) {
     showError(String(e));
     els.status.textContent = "Failed";
   } finally {
     setPhase("idle");
+  }
+}
+
+function showTranscript(result: Transcript, delivery: Delivery | null) {
+  els.transcript.value = result.text;
+  els.copy.disabled = result.text.length === 0;
+  const fallback = result.fallback_reason
+    ? ` (fell back: ${result.fallback_reason})`
+    : "";
+  els.meta.textContent = `${result.duration_secs.toFixed(1)}s - ${
+    result.engine
+  }${fallback}`;
+  if (!result.text) {
+    els.status.textContent = "Nothing came back";
+  } else if (delivery === "pasted") {
+    els.status.textContent = "Pasted";
+  } else if (delivery === "copied") {
+    els.status.textContent = "Copied to the clipboard";
+  } else {
+    els.status.textContent = "Done";
+  }
+}
+
+function onDictation(event: DictationEvent) {
+  switch (event.phase) {
+    case "recording":
+      clearError();
+      setPhase("recording");
+      break;
+    case "transcribing":
+      setPhase("transcribing");
+      break;
+    case "done":
+      setPhase("idle");
+      showTranscript(event.transcript, event.delivery);
+      break;
+    case "error":
+      setPhase("idle");
+      showError(event.message);
+      els.status.textContent = "Failed";
+      break;
+  }
+}
+
+async function saveHotkey() {
+  const combo = els.hotkey.value.trim();
+  if (!combo || combo === settings.hotkey) return;
+  clearError();
+  try {
+    await invoke("save_settings", { settings: { ...settings, hotkey: combo } });
+    settings = { ...settings, hotkey: combo };
+    await refreshStatus();
+  } catch (e) {
+    // Rejected: show why and put the working hotkey back in the box.
+    showError(String(e));
+    els.hotkey.value = settings.hotkey;
   }
 }
 
@@ -189,6 +256,13 @@ async function copyTranscript() {
 
 async function refreshStatus() {
   const s = await invoke<Status>("status");
+  els.kbdHint.textContent = s.hotkey_error
+    ? "Space to start and stop"
+    : `Space here, or ${settings.hotkey} in any app`;
+  els.hotkeyStatus.textContent =
+    s.hotkey_error ?? "Works in any app. Tap to start and stop, or hold to talk";
+  els.hotkeyStatus.classList.toggle("warn", s.hotkey_error !== null);
+
   els.keyStatus.textContent = s.has_api_key
     ? "A key is saved in your OS keychain"
     : "No key saved - the cloud engine is off until you add one";
@@ -288,6 +362,7 @@ async function persistSettings() {
     engine: els.engine.value as Engine,
     model: els.model.value,
     local_model: els.localModel.value,
+    auto_paste: els.autoPaste.checked,
   };
   try {
     await invoke("save_settings", { settings });
@@ -307,6 +382,13 @@ els.model.addEventListener("change", persistSettings);
 els.engine.addEventListener("change", persistSettings);
 els.localModel.addEventListener("change", persistSettings);
 els.downloadModel.addEventListener("click", downloadLocalModel);
+els.autoPaste.addEventListener("change", persistSettings);
+els.saveHotkey.addEventListener("click", saveHotkey);
+els.hotkey.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") saveHotkey();
+});
+
+listen<DictationEvent>("dictation", ({ payload }) => onDictation(payload));
 
 listen<DownloadProgress>("model-download", ({ payload }) => {
   els.downloadProgress.value = payload.received / payload.total;
@@ -346,6 +428,8 @@ async function init() {
     settings = await invoke<Settings>("get_settings");
     els.model.value = settings.model;
     els.engine.value = settings.engine;
+    els.hotkey.value = settings.hotkey;
+    els.autoPaste.checked = settings.auto_paste;
     await loadMicrophones();
     await loadLocalModels();
     await refreshStatus();

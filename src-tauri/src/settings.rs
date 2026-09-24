@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{groq, local};
+use crate::{groq, hotkey, local};
 
 /// Which engine is tried first. The other one is the fallback, whenever it is
 /// ready to go (a model on disk, or a key in the keychain).
@@ -31,6 +31,10 @@ pub struct Settings {
     /// Pinning the language skips Whisper's detection pass, which is both
     /// slightly faster and more accurate on short clips.
     pub language: String,
+    /// Global shortcut, in the plugin's format, e.g. "Ctrl+Shift+Space".
+    pub hotkey: String,
+    /// Paste into the focused window. Off leaves the text on the clipboard.
+    pub auto_paste: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +45,8 @@ impl Default for Settings {
             model: groq::MODEL_TURBO.to_string(),
             local_model: local::default_model().to_string(),
             language: "en".to_string(),
+            hotkey: hotkey::DEFAULT.to_string(),
+            auto_paste: true,
         }
     }
 }
@@ -60,6 +66,10 @@ impl Settings {
         }
         if self.microphone.as_deref().map(str::trim) == Some("") {
             self.microphone = None;
+        }
+        self.hotkey = self.hotkey.trim().to_string();
+        if hotkey::parse(&self.hotkey).is_none() {
+            self.hotkey = hotkey::DEFAULT.to_string();
         }
         self
     }
@@ -132,7 +142,19 @@ mod tests {
         assert_eq!(loaded.model, groq::MODEL_LARGE);
         assert_eq!(loaded.engine, Engine::Cloud);
         assert_eq!(loaded.local_model, local::default_model());
+        assert_eq!(loaded.hotkey, hotkey::DEFAULT);
+        assert!(loaded.auto_paste);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unparseable_hotkey_falls_back() {
+        let s = Settings {
+            hotkey: "banana".into(),
+            ..Default::default()
+        }
+        .sanitised();
+        assert_eq!(s.hotkey, hotkey::DEFAULT);
     }
 
     #[test]
@@ -172,6 +194,8 @@ mod tests {
             model: groq::MODEL_LARGE.into(),
             local_model: "base.en".into(),
             language: "en".into(),
+            hotkey: "Ctrl+Alt+D".into(),
+            auto_paste: false,
         };
         save(&dir, &original).unwrap();
         let loaded = load(&dir);
@@ -179,6 +203,8 @@ mod tests {
         assert_eq!(loaded.model, groq::MODEL_LARGE);
         assert_eq!(loaded.engine, Engine::Local);
         assert_eq!(loaded.local_model, "base.en");
+        assert_eq!(loaded.hotkey, "Ctrl+Alt+D");
+        assert!(!loaded.auto_paste);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

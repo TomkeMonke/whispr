@@ -18,6 +18,22 @@
       </header>
 
       <section id="settings" class="settings" hidden>
+        <div class="field">
+          <span>Hotkey</span>
+          <div class="inline">
+            <input id="hotkey" type="text" spellcheck="false" autocomplete="off" />
+            <button id="save-hotkey" class="btn" type="button">Set</button>
+          </div>
+          <small id="hotkey-status" class="hint">
+            Works in any app. Tap to start and stop, or hold to talk
+          </small>
+          <label class="check">
+            <input id="auto-paste" type="checkbox" />
+            <span>Paste into the app you are typing in</span>
+          </label>
+          <small class="hint">Off: the text is copied to the clipboard instead</small>
+        </div>
+
         <label class="field">
           <span>Engine</span>
           <select id="engine">
@@ -81,7 +97,7 @@
           <span class="dot"></span>
         </button>
         <p id="status" class="status">Loading...</p>
-        <p class="hint kbd-hint">Space to start and stop</p>
+        <p id="kbd-hint" class="hint kbd-hint">Space to start and stop</p>
       </section>
 
       <section class="result">

@@ -1,12 +1,15 @@
 //! whispr - personal dictation.
 //!
-//! Record in the window, transcribe with Groq or a local Whisper model, read the
-//! text back. Either engine can be primary; the other is the fallback. The global
-//! hotkey, overlay and auto-paste arrive in M2.
+//! Press a global hotkey anywhere, speak, and the transcript is pasted into the
+//! focused window. Transcription runs on Groq or a local Whisper model; either
+//! can be primary, with the other as the fallback. The window is for settings
+//! and for reading back the last result; closing it leaves whispr in the tray.
 
 mod audio;
 mod groq;
+mod hotkey;
 mod local;
+mod paste;
 mod secrets;
 mod settings;
 
@@ -15,7 +18,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use audio::Recorder;
 use settings::{Engine, Settings};
@@ -31,13 +37,24 @@ pub struct AppState {
     /// Shared with the blocking transcription task, hence the Arc.
     local: Arc<local::Engine>,
     downloading: AtomicBool,
+    /// A transcription is running. Guards against a second one racing it.
+    busy: AtomicBool,
+    hotkey: hotkey::Hotkey,
+    /// Why the hotkey could not be registered, usually another app owning it.
+    hotkey_error: Mutex<Option<String>>,
     settings: Mutex<Settings>,
     config_dir: PathBuf,
     recordings_dir: PathBuf,
     models_dir: PathBuf,
 }
 
-#[derive(Serialize)]
+impl AppState {
+    fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Clone, Serialize)]
 pub struct Transcript {
     text: String,
     duration_secs: f32,
@@ -56,6 +73,23 @@ pub struct Status {
     has_local_model: bool,
     /// This build runs the local engine on the GPU.
     gpu: bool,
+    hotkey_error: Option<String>,
+}
+
+/// Emitted as `dictation` for hotkey sessions, so the window can follow along
+/// even when the recording was started from another app.
+#[derive(Clone, Serialize)]
+#[serde(tag = "phase", rename_all = "lowercase")]
+enum DictationEvent {
+    Recording,
+    Transcribing,
+    Done {
+        transcript: Transcript,
+        delivery: Option<paste::Delivery>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Clone, Serialize)]
@@ -75,9 +109,9 @@ struct DownloadProgress {
 /// substitution both land in this function, so adding them later does not
 /// change the shape of the pipeline.
 ///
-/// Trailing newlines are stripped deliberately: once M2 pastes into whatever has
-/// focus, a trailing newline would submit a terminal prompt the instant the text
-/// lands.
+/// Trailing newlines are stripped deliberately: the text is pasted into whatever
+/// has focus, and a trailing newline would submit a terminal prompt the instant
+/// it lands.
 fn postprocess(raw: &str) -> String {
     raw.trim().to_string()
 }
@@ -126,6 +160,7 @@ fn status(state: State<'_, AppState>) -> Status {
         has_api_key: matches!(secrets::get(), Ok(Some(_))),
         has_local_model: local_model_ready(&state.models_dir, &local_model),
         gpu: local::GPU,
+        hotkey_error: state.hotkey_error.lock().unwrap().clone(),
     }
 }
 
@@ -147,6 +182,86 @@ fn cancel_recording(state: State<'_, AppState>) {
 
 #[tauri::command]
 async fn stop_and_transcribe(state: State<'_, AppState>) -> Result<Transcript, String> {
+    if state.busy.swap(true, Ordering::SeqCst) {
+        return Err("already transcribing".into());
+    }
+    let result = transcribe_capture(&state).await;
+    state.busy.store(false, Ordering::SeqCst);
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Hotkey sessions
+// ---------------------------------------------------------------------------
+
+fn start_dictation(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let mic = state.settings.lock().unwrap().microphone.clone();
+    let event = match state.recorder.start(mic) {
+        Ok(()) => DictationEvent::Recording,
+        Err(e) => DictationEvent::Error {
+            message: e.to_string(),
+        },
+    };
+    let _ = app.emit("dictation", event);
+}
+
+async fn finish_dictation(app: AppHandle) {
+    let state = app.state::<AppState>();
+    if state.busy.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = app.emit("dictation", DictationEvent::Transcribing);
+    let result = transcribe_capture(&state).await;
+    state.busy.store(false, Ordering::SeqCst);
+
+    let event = match result {
+        Ok(transcript) => {
+            let delivery = if transcript.text.is_empty() {
+                None
+            } else {
+                let auto_paste = state.settings.lock().unwrap().auto_paste;
+                let text = transcript.text.clone();
+                // Blocking: waits for modifier keys and the clipboard restore.
+                match tauri::async_runtime::spawn_blocking(move || {
+                    paste::deliver(&text, auto_paste)
+                })
+                .await
+                {
+                    Ok(Ok(delivery)) => Some(delivery),
+                    Ok(Err(message)) => {
+                        let _ = app.emit("dictation", DictationEvent::Error { message });
+                        None
+                    }
+                    Err(_) => None,
+                }
+            };
+            DictationEvent::Done {
+                transcript,
+                delivery,
+            }
+        }
+        Err(message) => DictationEvent::Error { message },
+    };
+    let _ = app.emit("dictation", event);
+}
+
+/// Register `combo` as the hotkey, replacing any previous one.
+fn register_hotkey(app: &AppHandle, combo: &str) -> Result<(), String> {
+    let shortcut = hotkey::parse(combo).ok_or_else(|| format!("'{combo}' is not a valid shortcut"))?;
+    let shortcuts = app.global_shortcut();
+    let _ = shortcuts.unregister_all();
+    shortcuts
+        .register(shortcut)
+        .map_err(|_| format!("{combo} is already taken by another app - pick another"))
+}
+
+// ---------------------------------------------------------------------------
+// Transcription
+// ---------------------------------------------------------------------------
+
+/// Stop the recorder and run the capture through the engine route.
+async fn transcribe_capture(state: &AppState) -> Result<Transcript, String> {
     // Stop and encode first, so the audio is safe on disk before any engine runs.
     let captured = state.recorder.stop().map_err(|e| e.to_string())?;
     let duration_secs = captured.duration_secs();
@@ -264,8 +379,25 @@ fn get_settings(state: State<'_, AppState>) -> Settings {
 }
 
 #[tauri::command]
-fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+fn save_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: Settings,
+) -> Result<(), String> {
+    // Loading falls back to the default for a bad hotkey; saving says so instead.
+    if hotkey::parse(&settings.hotkey).is_none() {
+        return Err(format!("'{}' is not a valid shortcut", settings.hotkey.trim()));
+    }
     let clean = settings.sanitised();
+    let previous_hotkey = state.settings.lock().unwrap().hotkey.clone();
+    if clean.hotkey != previous_hotkey {
+        if let Err(e) = register_hotkey(&app, &clean.hotkey) {
+            // Put the old one back rather than leave no hotkey at all.
+            let _ = register_hotkey(&app, &previous_hotkey);
+            return Err(e);
+        }
+        *state.hotkey_error.lock().unwrap() = None;
+    }
     settings::save(&state.config_dir, &clean).map_err(|e| e.to_string())?;
     *state.settings.lock().unwrap() = clean;
     Ok(())
@@ -322,10 +454,63 @@ fn prune_recordings(dir: &Path, keep: usize) {
 // Entry point
 // ---------------------------------------------------------------------------
 
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "Show whispr", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit whispr", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("whispr")
+        .menu(&menu)
+        // Left click opens the window; the menu is on right click.
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| hotkey::handle(app, event))
+                .build(),
+        )
+        // Closing the window hides it: the hotkey has to keep working. Quit is
+        // in the tray menu.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
             // Must happen before any keychain read.
             if let Err(e) = secrets::init() {
@@ -344,25 +529,40 @@ pub fn run() {
             let loaded = settings::load(&config_dir);
             let local = Arc::new(local::Engine::default());
 
-            // Load the local model in the background when it is the primary
-            // engine, so the first dictation does not pay for it.
-            if loaded.engine == Engine::Local {
+            // Load the local model in the background whenever it will answer
+            // first - it is the primary, or there is no key for the cloud - so
+            // the first dictation does not pay for it.
+            let has_key = matches!(secrets::get(), Ok(Some(_)));
+            if loaded.engine == Engine::Local || !has_key {
                 let (local, dir, model) =
                     (local.clone(), models_dir.clone(), loaded.local_model.clone());
                 std::thread::spawn(move || local.warm(&dir, &model));
             }
 
+            let combo = loaded.hotkey.clone();
             app.manage(AppState {
                 recorder: Recorder::new(),
                 http: groq::client(),
                 download_http: local::download_client(),
                 local,
                 downloading: AtomicBool::new(false),
+                busy: AtomicBool::new(false),
+                hotkey: hotkey::Hotkey::default(),
+                hotkey_error: Mutex::new(None),
                 settings: Mutex::new(loaded),
                 config_dir,
                 recordings_dir,
                 models_dir,
             });
+
+            // A taken hotkey must not stop the app starting: the window still
+            // works, and settings shows why the hotkey does not.
+            if let Err(e) = register_hotkey(app.handle(), &combo) {
+                eprintln!("[whispr] {e}");
+                *app.state::<AppState>().hotkey_error.lock().unwrap() = Some(e);
+            }
+
+            build_tray(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

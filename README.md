@@ -5,13 +5,15 @@ as the offline fallback. Windows and macOS.
 
 ## Status
 
-**M1 + M3.** Record in the window, transcribe with Groq or a local Whisper model,
-read the text back. M3 landed before M2 so there is a working engine that needs
-no API key.
+Press `Ctrl+Shift+Space` in any app and speak; the transcript is pasted where
+you were typing. Tap the key to start and stop, or hold it to talk. Transcription
+runs on Groq or on a local Whisper model. Closing the window leaves whispr in the
+tray.
 
 - [x] M1 - window app, cpal capture, Groq transcription
 - [x] M3 - local Whisper (whisper.cpp), model download, fallback routing
-- [ ] M2 - global hotkey, overlay, auto-paste, tray
+- [x] M2 - global hotkey (tap or hold), auto-paste, tray
+- [ ] M2 - recording overlay
 - [ ] Later - LLM cleanup pass, custom vocabulary
 - [ ] Later - macOS pass
 
@@ -60,6 +62,12 @@ otherwise whisper.cpp is built for the CPU. The first line of output says which
 and why. `WHISPR_GPU=0` or `WHISPR_GPU=1` overrides it. Plain `cargo` commands
 skip the detection, so pass `--features cuda` to them yourself.
 
+After installing CUDA, open a **new** terminal. The build finds the toolkit
+through `CUDA_PATH_V12_9` (MSBuild's CUDA targets read the versioned variable,
+not `CUDA_PATH`), and a shell opened before the install does not have it: CMake
+then fails with "The CUDA Toolkit v12.9 directory '' does not exist". The first
+CUDA build compiles whisper.cpp's kernels and takes about 9 minutes.
+
 ```
 cd src-tauri && cargo test    # unit tests, no audio hardware needed
 
@@ -86,7 +94,9 @@ mic -> cpal (dedicated thread) -> downmix -> resample 16 kHz
 - `local.rs` - local engine, model catalog, checksummed download
 - `secrets.rs` - API key in the OS credential store
 - `settings.rs` - everything else, as JSON in the app config dir
-- `lib.rs` - Tauri commands and the `postprocess` seam
+- `hotkey.rs` - global shortcut, tap-to-toggle vs hold-to-talk
+- `paste.rs` - clipboard, the paste keystroke, restoring the old clipboard
+- `lib.rs` - Tauri commands, hotkey sessions, tray, the `postprocess` seam
 
 ### Notes on a few choices
 
@@ -96,9 +106,16 @@ oversized clip does not fall back, because answering from the other engine would
 hide a problem the user needs to fix. An engine that is not set up (no key, no
 model) is simply skipped.
 
-**Local models are the quantised English-only builds.** Measured on a 6 s clip on
-a desktop CPU: `base.en` 1.2 s but misheard a phrase, `small.en` 4.2 s and
-exact. Small is the CPU default; Turbo is the default for a CUDA build. Every
+**Local models are the quantised English-only builds.** Measured on a 6 s clip:
+
+| model | desktop CPU | GTX 1660 SUPER (CUDA) |
+|---|---|---|
+| `base.en` | 1.2 s, misheard a phrase | - |
+| `small.en` | 4.2 s, exact | 0.63 s, exact |
+| `large-v3-turbo` | - | 2.0 s, exact |
+
+GPU times are with the model already loaded; the first run after launch adds
+about 0.6 s. Small is the CPU default; Turbo is the default for a CUDA build. Every
 download is checked against the SHA-256 Hugging Face publishes before it is
 renamed into place.
 
