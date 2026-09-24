@@ -12,8 +12,7 @@ tray.
 
 - [x] M1 - window app, cpal capture, Groq transcription
 - [x] M3 - local Whisper (whisper.cpp), model download, fallback routing
-- [x] M2 - global hotkey (tap or hold), auto-paste, tray
-- [ ] M2 - recording overlay
+- [x] M2 - global hotkey (tap or hold), auto-paste, tray, recording overlay
 - [ ] Later - LLM cleanup pass, custom vocabulary
 - [ ] Later - macOS pass
 
@@ -96,6 +95,7 @@ mic -> cpal (dedicated thread) -> downmix -> resample 16 kHz
 - `settings.rs` - everything else, as JSON in the app config dir
 - `hotkey.rs` - global shortcut, tap-to-toggle vs hold-to-talk
 - `paste.rs` - clipboard, the paste keystroke, restoring the old clipboard
+- `overlay.rs` - the listening/transcribing pill; never takes focus, click-through
 - `lib.rs` - Tauri commands, hotkey sessions, tray, the `postprocess` seam
 
 ### Notes on a few choices
@@ -115,7 +115,8 @@ model) is simply skipped.
 | `large-v3-turbo` | - | 2.0 s, exact |
 
 GPU times are with the model already loaded; the first run after launch adds
-about 0.6 s. Small is the CPU default; Turbo is the default for a CUDA build. Every
+about 0.6 s. Small is the default on every build: on the GPU it is three times
+faster than Turbo and was just as exact. Every
 download is checked against the SHA-256 Hugging Face publishes before it is
 renamed into place.
 

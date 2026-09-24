@@ -9,6 +9,7 @@ mod audio;
 mod groq;
 mod hotkey;
 mod local;
+mod overlay;
 mod paste;
 mod secrets;
 mod settings;
@@ -16,6 +17,7 @@ mod settings;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
@@ -197,14 +199,22 @@ async fn stop_and_transcribe(state: State<'_, AppState>) -> Result<Transcript, S
 fn start_dictation(app: &AppHandle) {
     let state = app.state::<AppState>();
     let mic = state.settings.lock().unwrap().microphone.clone();
+    overlay::show(app);
     let event = match state.recorder.start(mic) {
         Ok(()) => DictationEvent::Recording,
-        Err(e) => DictationEvent::Error {
-            message: e.to_string(),
-        },
+        Err(e) => {
+            overlay::hide_after(app, ERROR_LINGER);
+            DictationEvent::Error {
+                message: e.to_string(),
+            }
+        }
     };
     let _ = app.emit("dictation", event);
 }
+
+/// How long the overlay stays up after a session ends: long enough to read.
+const DONE_LINGER: Duration = Duration::from_millis(900);
+const ERROR_LINGER: Duration = Duration::from_millis(2500);
 
 async fn finish_dictation(app: AppHandle) {
     let state = app.state::<AppState>();
@@ -236,12 +246,16 @@ async fn finish_dictation(app: AppHandle) {
                     Err(_) => None,
                 }
             };
+            overlay::hide_after(&app, DONE_LINGER);
             DictationEvent::Done {
                 transcript,
                 delivery,
             }
         }
-        Err(message) => DictationEvent::Error { message },
+        Err(message) => {
+            overlay::hide_after(&app, ERROR_LINGER);
+            DictationEvent::Error { message }
+        }
     };
     let _ = app.emit("dictation", event);
 }
@@ -560,6 +574,12 @@ pub fn run() {
             if let Err(e) = register_hotkey(app.handle(), &combo) {
                 eprintln!("[whispr] {e}");
                 *app.state::<AppState>().hotkey_error.lock().unwrap() = Some(e);
+            }
+
+            // Without the overlay, dictation still works - there is just no
+            // on-screen sign of it - so a failure here must not stop startup.
+            if let Err(e) = overlay::create(app.handle()) {
+                eprintln!("[whispr] could not create the overlay: {e}");
             }
 
             build_tray(app)?;

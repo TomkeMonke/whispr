@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/overlay.css" />
+    <title>whispr</title>
+    <script type="module" src="/src/overlay.ts" defer></script>
+  </head>
+
+  <body>
+    <div id="pill" class="pill" data-phase="recording">
+      <span class="icon">
+        <span class="dot"></span>
+        <span class="spinner"></span>
+        <span class="mark"></span>
+      </span>
+      <span id="bars" class="bars">
+        <i></i><i></i><i></i><i></i><i></i>
+      </span>
+      <span id="label" class="label">Listening</span>
+    </div>
+  </body>
+</html>

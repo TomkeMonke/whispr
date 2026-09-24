@@ -62,13 +62,12 @@ pub const MODELS: &[ModelSpec] = &[
 /// Whether this binary was built with GPU acceleration.
 pub const GPU: bool = cfg!(feature = "cuda");
 
-/// Turbo is quick on a GPU but slow on a laptop CPU, where Small is the better trade.
+/// Small on every build. On a GPU it was three times faster than Turbo (0.63 s
+/// against 2.0 s for a 6 s clip) and just as exact on clean dictation; on a CPU,
+/// Turbo is too slow to dictate with at all. Turbo stays one click away for
+/// harder audio.
 pub fn default_model() -> &'static str {
-    if GPU {
-        "large-v3-turbo"
-    } else {
-        "small.en"
-    }
+    "small.en"
 }
 
 pub fn find(id: &str) -> Option<&'static ModelSpec> {
