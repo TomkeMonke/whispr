@@ -39,6 +39,29 @@
           <small id="autostart-hint" class="hint">Opens straight to the tray, hotkey ready</small>
         </div>
 
+        <div class="field">
+          <span>Cleanup</span>
+          <label class="check">
+            <input id="cleanup" type="checkbox" />
+            <span>Polish the text with AI before pasting</span>
+          </label>
+          <small class="hint">
+            Fixes punctuation, drops filler words and anything you take back ("no
+            wait, make it Friday"). Uses your Groq key
+          </small>
+        </div>
+
+        <label class="field">
+          <span>Vocabulary</span>
+          <textarea
+            id="vocabulary"
+            rows="3"
+            spellcheck="false"
+            placeholder="One per line: names, products, jargon"
+          ></textarea>
+          <small class="hint">Spelled exactly like this in your transcripts</small>
+        </label>
+
         <label class="field">
           <span>Engine</span>
           <select id="engine">
@@ -111,6 +134,10 @@
           placeholder="Your transcript will appear here"
           spellcheck="false"
         ></textarea>
+        <details id="original" class="original" hidden>
+          <summary>Before cleanup</summary>
+          <p id="original-text"></p>
+        </details>
         <div class="result-actions">
           <span id="meta" class="hint"></span>
           <button id="copy" class="btn" type="button" disabled>Copy</button>

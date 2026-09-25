@@ -14,10 +14,14 @@ interface Settings {
   language: string;
   hotkey: string;
   auto_paste: boolean;
+  cleanup: boolean;
+  vocabulary: string[];
 }
 
 interface Transcript {
   text: string;
+  raw_text: string | null;
+  cleanup_note: string | null;
   duration_secs: number;
   engine: string;
   fallback_reason: string | null;
@@ -88,6 +92,10 @@ const els = {
   autoPaste: $<HTMLInputElement>("auto-paste"),
   autostart: $<HTMLInputElement>("autostart"),
   autostartHint: $<HTMLElement>("autostart-hint"),
+  cleanup: $<HTMLInputElement>("cleanup"),
+  vocabulary: $<HTMLTextAreaElement>("vocabulary"),
+  original: $<HTMLDetailsElement>("original"),
+  originalText: $<HTMLParagraphElement>("original-text"),
   kbdHint: $<HTMLElement>("kbd-hint"),
 };
 
@@ -100,6 +108,8 @@ let settings: Settings = {
   language: "en",
   hotkey: "Ctrl+Shift+Space",
   auto_paste: true,
+  cleanup: true,
+  vocabulary: [],
 };
 let models: ModelInfo[] = [];
 let downloading = false;
@@ -192,9 +202,13 @@ function showTranscript(result: Transcript, delivery: Delivery | null) {
   const fallback = result.fallback_reason
     ? ` (fell back: ${result.fallback_reason})`
     : "";
+  const note = result.cleanup_note ? ` - ${result.cleanup_note}` : "";
   els.meta.textContent = `${result.duration_secs.toFixed(1)}s - ${
     result.engine
-  }${fallback}`;
+  }${fallback}${note}`;
+  els.original.hidden = result.raw_text === null;
+  els.original.open = false;
+  els.originalText.textContent = result.raw_text ?? "";
   if (!result.text) {
     els.status.textContent = "Nothing came back";
   } else if (delivery === "pasted") {
@@ -385,6 +399,8 @@ async function persistSettings() {
     model: els.model.value,
     local_model: els.localModel.value,
     auto_paste: els.autoPaste.checked,
+    cleanup: els.cleanup.checked,
+    vocabulary: els.vocabulary.value.split(/[\n,]/),
   };
   try {
     await invoke("save_settings", { settings });
@@ -406,6 +422,14 @@ els.localModel.addEventListener("change", persistSettings);
 els.downloadModel.addEventListener("click", downloadLocalModel);
 els.autoPaste.addEventListener("change", persistSettings);
 els.autostart.addEventListener("change", toggleAutostart);
+els.cleanup.addEventListener("change", persistSettings);
+// Saved when the box loses focus, not per keystroke.
+els.vocabulary.addEventListener("change", async () => {
+  await persistSettings();
+  // Show the tidied list (trimmed, de-duplicated) as the backend stored it.
+  settings = await invoke<Settings>("get_settings");
+  els.vocabulary.value = settings.vocabulary.join("\n");
+});
 els.saveHotkey.addEventListener("click", saveHotkey);
 els.hotkey.addEventListener("keydown", (e) => {
   if (e.key === "Enter") saveHotkey();
@@ -453,6 +477,8 @@ async function init() {
     els.engine.value = settings.engine;
     els.hotkey.value = settings.hotkey;
     els.autoPaste.checked = settings.auto_paste;
+    els.cleanup.checked = settings.cleanup;
+    els.vocabulary.value = settings.vocabulary.join("\n");
     await loadMicrophones();
     await loadLocalModels();
     await loadAutostart();

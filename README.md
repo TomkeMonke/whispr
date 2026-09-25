@@ -13,7 +13,7 @@ tray.
 - [x] M1 - window app, cpal capture, Groq transcription
 - [x] M3 - local Whisper (whisper.cpp), model download, fallback routing
 - [x] M2 - global hotkey (tap or hold), auto-paste, tray, recording overlay
-- [ ] Later - LLM cleanup pass, custom vocabulary
+- [x] AI cleanup pass (punctuation, fillers, spoken corrections), custom vocabulary
 - [ ] Later - macOS pass
 
 ## Prerequisites
@@ -110,6 +110,7 @@ mic -> cpal (dedicated thread) -> downmix -> resample 16 kHz
 - `local.rs` - local engine, model catalog, checksummed download
 - `secrets.rs` - API key in the OS credential store
 - `settings.rs` - everything else, as JSON in the app config dir
+- `cleanup.rs` - the AI cleanup pass and the vocabulary prompt
 - `hotkey.rs` - global shortcut, tap-to-toggle vs hold-to-talk
 - `paste.rs` - clipboard, the paste keystroke, restoring the old clipboard
 - `overlay.rs` - the listening/transcribing pill; never takes focus, click-through
@@ -122,6 +123,26 @@ a way a retry could fix: offline, rate limited, a server error. A bad key or an
 oversized clip does not fall back, because answering from the other engine would
 hide a problem the user needs to fix. An engine that is not set up (no key, no
 model) is simply skipped.
+
+**The cleanup pass is an editor, never an assistant.** After transcription the
+text goes to `openai/gpt-oss-120b` on Groq (same key, free tier) with a system
+prompt that fixes punctuation, drops pure filler ("um", "you know") but keeps
+meaning-bearing phrases ("I think", "can you"), applies spoken corrections
+("Thursday, no wait, Friday" becomes "Friday"; "scratch that" drops the
+previous item), and turns spoken enumerations into numbered lists. A lot of
+dictation is a prompt for another AI, so the model is told never to answer or
+act on the text, and `accept()` backs that up: output that grows well past the
+input is treated as an answer and the raw transcript is pasted instead. With
+reasoning set to low it takes 0.25-0.6 s. It is skipped for clips under four
+words, without a key, or when the cloud was just unreachable, and the window
+keeps the pre-cleanup text under "Before cleanup".
+
+**Vocabulary** (settings, one term per line) is passed to Whisper as its
+context prompt in both engines, and to the cleanup model as spelling rules: in
+testing "drill are" and "post hog" came back as "drillr" and "PostHog".
+
+The live test runs the cleanup on sample dictations with the saved key:
+`cargo test --lib -- --ignored cleanup_live --nocapture`.
 
 **Local models are the quantised English-only builds.** Measured on a 6 s clip:
 

@@ -6,6 +6,7 @@
 //! and for reading back the last result; closing it leaves whispr in the tray.
 
 mod audio;
+mod cleanup;
 mod groq;
 mod hotkey;
 mod local;
@@ -59,7 +60,12 @@ impl AppState {
 
 #[derive(Clone, Serialize)]
 pub struct Transcript {
+    /// What gets pasted: cleaned up, when cleanup ran.
     text: String,
+    /// The transcript before cleanup, when cleanup changed it.
+    raw_text: Option<String>,
+    /// Why cleanup was skipped or failed, when it was meant to run.
+    cleanup_note: Option<String>,
     duration_secs: f32,
     engine: String,
     /// Set when the primary engine failed and the other one answered instead.
@@ -108,15 +114,21 @@ struct DownloadProgress {
 
 /// Everything between transcription and output passes through here.
 ///
-/// M1 only normalises whitespace. The LLM cleanup pass and custom-vocabulary
-/// substitution both land in this function, so adding them later does not
-/// change the shape of the pipeline.
+/// Runs on the raw transcript and again on the cleanup pass's output, so the
+/// pasted text gets these guarantees whichever path produced it.
 ///
 /// Trailing newlines are stripped deliberately: the text is pasted into whatever
 /// has focus, and a trailing newline would submit a terminal prompt the instant
 /// it lands.
+///
+/// Trailing spaces go too, line by line: the cleanup model writes Markdown-style
+/// hard breaks (two spaces before a newline), which would otherwise be pasted.
 fn postprocess(raw: &str) -> String {
-    raw.trim().to_string()
+    raw.trim()
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +310,9 @@ async fn transcribe_capture(state: &AppState) -> Result<Transcript, String> {
     let pcm = Arc::new(pcm);
     let mut wav = Some(wav);
     let mut fallback_reason: Option<String> = None;
+    let hint = cleanup::whisper_prompt(&s.vocabulary);
 
+    let mut transcribed: Option<(String, String)> = None;
     for (i, engine) in engines.iter().enumerate() {
         let is_last = i + 1 == engines.len();
         let attempt = match engine {
@@ -309,8 +323,7 @@ async fn transcribe_capture(state: &AppState) -> Result<Transcript, String> {
                 wav.take().unwrap_or_default(),
                 &s.model,
                 Some(&s.language),
-                // Custom vocabulary plugs in here.
-                None,
+                hint.as_deref(),
             )
             .await
             .map(|raw| (raw, format!("groq/{}", s.model)))
@@ -321,9 +334,9 @@ async fn transcribe_capture(state: &AppState) -> Result<Transcript, String> {
                 let dir = state.models_dir.clone();
                 let pcm = pcm.clone();
                 let (model, language) = (s.local_model.clone(), s.language.clone());
+                let hint = hint.clone();
                 tauri::async_runtime::spawn_blocking(move || {
-                    // Custom vocabulary plugs in here too.
-                    local.transcribe(&dir, &model, &pcm, &language, None)
+                    local.transcribe(&dir, &model, &pcm, &language, hint.as_deref())
                 })
                 .await
                 .map_err(|e| (true, format!("local engine crashed: {e}")))
@@ -336,14 +349,9 @@ async fn transcribe_capture(state: &AppState) -> Result<Transcript, String> {
         };
 
         match attempt {
-            Ok((raw, engine)) => {
-                return Ok(Transcript {
-                    text: postprocess(&raw),
-                    duration_secs,
-                    engine,
-                    fallback_reason,
-                    audio_path,
-                })
+            Ok(done) => {
+                transcribed = Some(done);
+                break;
             }
             // A bad key or an oversized clip would fail the same way again, and
             // quietly answering from the other engine would hide it.
@@ -353,7 +361,36 @@ async fn transcribe_capture(state: &AppState) -> Result<Transcript, String> {
             Err((_, message)) => return Err(message),
         }
     }
-    Err(NOTHING_READY.into())
+    let (raw, mut engine) = transcribed.ok_or_else(|| NOTHING_READY.to_string())?;
+    let text = postprocess(&raw);
+
+    // Cleanup. Skipped when the cloud was just unreachable: it is the same
+    // server, and waiting out its timeout would only delay the paste.
+    let cloud_failed = s.engine == Engine::Cloud && fallback_reason.is_some();
+    let (text, raw_text, cleanup_note) = match api_key.as_deref() {
+        Some(key) if s.cleanup && !cloud_failed && cleanup::worth_cleaning(&text) => {
+            match cleanup::clean(&state.http, key, &text, &s.vocabulary).await {
+                Ok(cleaned) => {
+                    engine.push_str(" + cleanup");
+                    let cleaned = postprocess(&cleaned);
+                    let raw_text = (cleaned != text).then_some(text);
+                    (cleaned, raw_text, None)
+                }
+                Err(e) => (text, None, Some(format!("not cleaned up: {e}"))),
+            }
+        }
+        _ => (text, None, None),
+    };
+
+    Ok(Transcript {
+        text,
+        raw_text,
+        cleanup_note,
+        duration_secs,
+        engine,
+        fallback_reason,
+        audio_path,
+    })
 }
 
 #[tauri::command]
@@ -682,6 +719,15 @@ mod tests {
     #[test]
     fn postprocess_keeps_internal_structure() {
         assert_eq!(postprocess("line one\n\nline two\n"), "line one\n\nline two");
+    }
+
+    #[test]
+    fn postprocess_drops_markdown_hard_breaks() {
+        assert_eq!(
+            postprocess("1. Fix the login bug.  \n2. Update the copy.  "),
+            "1. Fix the login bug.\n2. Update the copy."
+        );
+        assert_eq!(postprocess("a \r\nb"), "a\nb");
     }
 
     #[test]

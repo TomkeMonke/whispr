@@ -35,6 +35,10 @@ pub struct Settings {
     pub hotkey: String,
     /// Paste into the focused window. Off leaves the text on the clipboard.
     pub auto_paste: bool,
+    /// Tidy the transcript with an LLM before it is pasted. Needs the Groq key.
+    pub cleanup: bool,
+    /// Names and jargon to spell right: a hint to Whisper, and a rule for cleanup.
+    pub vocabulary: Vec<String>,
 }
 
 impl Default for Settings {
@@ -47,6 +51,8 @@ impl Default for Settings {
             language: "en".to_string(),
             hotkey: hotkey::DEFAULT.to_string(),
             auto_paste: true,
+            cleanup: true,
+            vocabulary: Vec::new(),
         }
     }
 }
@@ -67,12 +73,32 @@ impl Settings {
         if self.microphone.as_deref().map(str::trim) == Some("") {
             self.microphone = None;
         }
+        self.vocabulary = clean_vocabulary(&self.vocabulary);
         self.hotkey = self.hotkey.trim().to_string();
         if hotkey::parse(&self.hotkey).is_none() {
             self.hotkey = hotkey::DEFAULT.to_string();
         }
         self
     }
+}
+
+/// Most terms a vocabulary keeps, and the longest term. Both bound the prompt
+/// sizes: Whisper's hint is capped at 224 tokens.
+const MAX_TERMS: usize = 100;
+const MAX_TERM_CHARS: usize = 60;
+
+/// Trim, drop blanks and over-long entries, and de-duplicate ignoring case,
+/// keeping the first spelling given.
+fn clean_vocabulary(terms: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    terms
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty() && t.chars().count() <= MAX_TERM_CHARS)
+        .filter(|t| seen.insert(t.to_lowercase()))
+        .take(MAX_TERMS)
+        .map(str::to_string)
+        .collect()
 }
 
 pub fn path(dir: &Path) -> PathBuf {
@@ -144,6 +170,8 @@ mod tests {
         assert_eq!(loaded.local_model, local::default_model());
         assert_eq!(loaded.hotkey, hotkey::DEFAULT);
         assert!(loaded.auto_paste);
+        assert!(loaded.cleanup);
+        assert!(loaded.vocabulary.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -155,6 +183,22 @@ mod tests {
         }
         .sanitised();
         assert_eq!(s.hotkey, hotkey::DEFAULT);
+    }
+
+    #[test]
+    fn vocabulary_is_tidied() {
+        let s = Settings {
+            vocabulary: vec![
+                " drillr ".into(),
+                "".into(),
+                "Drillr".into(),
+                "PostHog".into(),
+                "x".repeat(200),
+            ],
+            ..Default::default()
+        }
+        .sanitised();
+        assert_eq!(s.vocabulary, vec!["drillr", "PostHog"]);
     }
 
     #[test]
@@ -196,6 +240,8 @@ mod tests {
             language: "en".into(),
             hotkey: "Ctrl+Alt+D".into(),
             auto_paste: false,
+            cleanup: false,
+            vocabulary: vec!["Tauri".into()],
         };
         save(&dir, &original).unwrap();
         let loaded = load(&dir);
@@ -205,6 +251,8 @@ mod tests {
         assert_eq!(loaded.local_model, "base.en");
         assert_eq!(loaded.hotkey, "Ctrl+Alt+D");
         assert!(!loaded.auto_paste);
+        assert!(!loaded.cleanup);
+        assert_eq!(loaded.vocabulary, vec!["Tauri"]);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

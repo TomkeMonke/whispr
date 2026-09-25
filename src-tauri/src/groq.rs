@@ -61,7 +61,7 @@ pub fn client() -> reqwest::Client {
 /// Transcribe a 16 kHz mono WAV.
 ///
 /// `prompt` is Whisper's context hint - roughly 224 tokens of names and jargon
-/// that nudge spelling. Unused in M1; it is the hook custom vocabulary plugs into.
+/// that nudge spelling. The vocabulary from settings arrives here.
 pub async fn transcribe(
     client: &reqwest::Client,
     api_key: &str,
