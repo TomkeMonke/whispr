@@ -452,6 +452,28 @@ kbd {
   box-shadow: 0 0 18px rgba(235, 87, 87, 0.45);
 }
 
+/* A ring that keeps pulsing out of the button while it listens. */
+.recorder[data-phase="recording"] .record::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 50%;
+  border: 2px solid var(--danger);
+  animation: ripple 1.6s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+  pointer-events: none;
+}
+
+@keyframes ripple {
+  from {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  to {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
 .recorder[data-phase="recording"] .record .dot {
   width: 14px;
   height: 14px;
@@ -512,7 +534,7 @@ kbd {
   color: var(--muted);
 }
 
-/* Heights are driven from the level meter in main.ts. */
+/* Heights and opacity are driven every frame by flow.ts. */
 .meter {
   display: flex;
   align-items: center;
@@ -528,11 +550,11 @@ kbd {
   border-radius: 2px;
   background: var(--border-strong);
   transform: scaleY(0.12);
-  transition: transform 70ms linear, background 160ms ease;
+  transition: background 160ms ease;
 }
 
 .recorder[data-phase="recording"] .meter i {
-  background: var(--text-2);
+  background: var(--text);
 }
 
 /* toolbar + mic picker ---------------------------------------------------- */

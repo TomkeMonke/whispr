@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { createFlow } from "./flow";
 
 type Phase = "idle" | "recording" | "transcribing";
 
@@ -126,17 +127,9 @@ let settings: Settings = {
 };
 let models: ModelInfo[] = [];
 let downloading = false;
-let levelTimer: number | undefined;
 let view: View = "dictate";
 
-// The meter scrolls: each tick drops the oldest level and adds the newest.
-const METER_BARS = 36;
-const meterBars = Array.from({ length: METER_BARS }, () => {
-  const bar = document.createElement("i");
-  els.meter.append(bar);
-  return bar;
-});
-const meterLevels: number[] = new Array(METER_BARS).fill(0);
+const meter = createFlow(els.meter, 36);
 
 const megabytes = (bytes: number) => `${Math.round(bytes / 1_000_000)} MB`;
 
@@ -153,9 +146,9 @@ function setPhase(next: Phase) {
 
   if (next === "recording") {
     els.status.textContent = "Listening...";
-    startLevelPolling();
+    meter.start();
   } else {
-    stopLevelPolling();
+    meter.stop();
     if (next === "transcribing") els.status.textContent = "Transcribing...";
   }
 }
@@ -170,37 +163,6 @@ function clearError() {
   els.error.textContent = "";
 }
 
-function startLevelPolling() {
-  stopLevelPolling();
-  levelTimer = window.setInterval(async () => {
-    try {
-      const level = await invoke<number>("input_level");
-      // Level is a raw peak; a cube root opens up the quiet end so normal
-      // speech visibly moves the ring instead of sitting near zero.
-      const eased = Math.min(1, Math.cbrt(level) * 1.1);
-      meterLevels.shift();
-      meterLevels.push(eased);
-      renderMeter();
-    } catch {
-      /* the stream may already be closing; the next tick will settle it */
-    }
-  }, 50);
-}
-
-function stopLevelPolling() {
-  if (levelTimer !== undefined) {
-    clearInterval(levelTimer);
-    levelTimer = undefined;
-  }
-  meterLevels.fill(0);
-  renderMeter();
-}
-
-function renderMeter() {
-  meterLevels.forEach((level, i) => {
-    meterBars[i].style.transform = `scaleY(${Math.max(0.12, level)})`;
-  });
-}
 
 /** Renders "Ctrl+Shift+Space" as one <kbd> per key. */
 function keyChips(combo: string): HTMLElement {

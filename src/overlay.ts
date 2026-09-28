@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { createFlow } from "./flow";
 
 // Rust shows and hides this window; the page only reflects the phase.
 
@@ -13,47 +13,17 @@ type DictationEvent =
 
 const pill = document.getElementById("pill")!;
 const label = document.getElementById("label")!;
-const bars = Array.from(document.querySelectorAll<HTMLElement>("#bars i"));
-
-// Different weights per bar so the row moves like a meter, not one block.
-const WEIGHTS = [0.55, 0.85, 1, 0.8, 0.5];
-
-let levelTimer: number | undefined;
+// The pill's glow follows the voice too, through --flow-level.
+const flow = createFlow(document.getElementById("bars")!, 18, pill);
 
 function setPhase(phase: Phase, text: string) {
   pill.dataset.phase = phase;
   label.textContent = text;
   if (phase === "recording") {
-    startLevels();
+    flow.start();
   } else {
-    stopLevels();
+    flow.stop();
   }
-}
-
-function startLevels() {
-  stopLevels();
-  levelTimer = window.setInterval(async () => {
-    try {
-      const level = await invoke<number>("input_level");
-      // Same easing as the main window: a cube root opens up the quiet end.
-      const eased = Math.min(1, Math.cbrt(level) * 1.1);
-      bars.forEach((bar, i) => {
-        const jitter = 0.85 + Math.random() * 0.3;
-        const scale = Math.max(0.15, Math.min(1, eased * WEIGHTS[i] * jitter));
-        bar.style.transform = `scaleY(${scale})`;
-      });
-    } catch {
-      /* the stream may be closing; the next tick settles it */
-    }
-  }, 60);
-}
-
-function stopLevels() {
-  if (levelTimer !== undefined) {
-    clearInterval(levelTimer);
-    levelTimer = undefined;
-  }
-  bars.forEach((bar) => (bar.style.transform = "scaleY(0.15)"));
 }
 
 listen<DictationEvent>("dictation", ({ payload }) => {

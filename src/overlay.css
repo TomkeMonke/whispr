@@ -36,6 +36,22 @@ body {
   color: var(--text);
   font-size: 13px;
   letter-spacing: 0.01em;
+  transition: border-color 200ms ease;
+}
+
+/* Listening: just the dot and the waveform, centred, and the edge and a soft
+   inner glow brighten with the voice (--flow-level is set by flow.ts). */
+.pill[data-phase="recording"] {
+  --flow-level: 0;
+  justify-content: center;
+  gap: 12px;
+  border-color: rgba(255, 255, 255, calc(0.08 + var(--flow-level) * 0.22));
+  box-shadow: inset 0 0 calc(6px + var(--flow-level) * 18px)
+    rgba(124, 134, 236, calc(0.08 + var(--flow-level) * 0.35));
+}
+
+.pill[data-phase="recording"] .label {
+  display: none;
 }
 
 .icon {
@@ -74,20 +90,20 @@ body {
   display: none;
   align-items: center;
   gap: 3px;
-  height: 18px;
+  height: 22px;
 }
 
 [data-phase="recording"] .bars {
   display: flex;
 }
 
+/* Heights and opacity are driven every frame by flow.ts. */
 .bars i {
   width: 3px;
-  height: 18px;
+  height: 100%;
   border-radius: 2px;
-  background: var(--text);
+  background: #fff;
   transform: scaleY(0.15);
-  transition: transform 80ms linear;
 }
 
 /* transcribing ------------------------------------------------------------- */
