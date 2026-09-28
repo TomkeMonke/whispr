@@ -1,8 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 type Phase = "idle" | "recording" | "transcribing";
+
+type View = "dictate" | "settings";
+
+type Theme = "dark" | "light";
 
 type Engine = "cloud" | "local";
 
@@ -67,14 +72,22 @@ const $ = <T extends HTMLElement>(id: string): T => {
 
 const els = {
   record: $<HTMLButtonElement>("record"),
-  ring: $<HTMLSpanElement>("level-ring"),
+  recorder: $<HTMLElement>("recorder"),
+  meter: $<HTMLElement>("meter"),
   status: $<HTMLParagraphElement>("status"),
   transcript: $<HTMLTextAreaElement>("transcript"),
   copy: $<HTMLButtonElement>("copy"),
+  copyLabel: $<HTMLSpanElement>("copy-label"),
   meta: $<HTMLSpanElement>("meta"),
   error: $<HTMLParagraphElement>("error"),
   settings: $<HTMLElement>("settings"),
-  settingsToggle: $<HTMLButtonElement>("settings-toggle"),
+  dictate: $<HTMLElement>("view-dictate"),
+  navDictate: $<HTMLButtonElement>("nav-dictate"),
+  navSettings: $<HTMLButtonElement>("nav-settings"),
+  viewTitle: $<HTMLElement>("view-title"),
+  engineBadge: $<HTMLElement>("engine-badge"),
+  engineLabel: $<HTMLElement>("engine-label"),
+  sidebarHotkey: $<HTMLElement>("sidebar-hotkey"),
   apiKey: $<HTMLInputElement>("api-key"),
   saveKey: $<HTMLButtonElement>("save-key"),
   keyStatus: $<HTMLElement>("key-status"),
@@ -114,6 +127,16 @@ let settings: Settings = {
 let models: ModelInfo[] = [];
 let downloading = false;
 let levelTimer: number | undefined;
+let view: View = "dictate";
+
+// The meter scrolls: each tick drops the oldest level and adds the newest.
+const METER_BARS = 36;
+const meterBars = Array.from({ length: METER_BARS }, () => {
+  const bar = document.createElement("i");
+  els.meter.append(bar);
+  return bar;
+});
+const meterLevels: number[] = new Array(METER_BARS).fill(0);
 
 const megabytes = (bytes: number) => `${Math.round(bytes / 1_000_000)} MB`;
 
@@ -121,7 +144,11 @@ const megabytes = (bytes: number) => `${Math.round(bytes / 1_000_000)} MB`;
 
 function setPhase(next: Phase) {
   phase = next;
-  els.record.classList.toggle("is-recording", next === "recording");
+  els.recorder.dataset.phase = next;
+  els.record.setAttribute(
+    "aria-label",
+    next === "recording" ? "Stop recording" : "Start recording",
+  );
   els.record.disabled = next === "transcribing";
 
   if (next === "recording") {
@@ -151,8 +178,9 @@ function startLevelPolling() {
       // Level is a raw peak; a cube root opens up the quiet end so normal
       // speech visibly moves the ring instead of sitting near zero.
       const eased = Math.min(1, Math.cbrt(level) * 1.1);
-      els.ring.style.transform = `scale(${1 + eased * 0.55})`;
-      els.ring.style.opacity = `${0.25 + eased * 0.65}`;
+      meterLevels.shift();
+      meterLevels.push(eased);
+      renderMeter();
     } catch {
       /* the stream may already be closing; the next tick will settle it */
     }
@@ -164,8 +192,43 @@ function stopLevelPolling() {
     clearInterval(levelTimer);
     levelTimer = undefined;
   }
-  els.ring.style.transform = "scale(1)";
-  els.ring.style.opacity = "0";
+  meterLevels.fill(0);
+  renderMeter();
+}
+
+function renderMeter() {
+  meterLevels.forEach((level, i) => {
+    meterBars[i].style.transform = `scaleY(${Math.max(0.12, level)})`;
+  });
+}
+
+/** Renders "Ctrl+Shift+Space" as one <kbd> per key. */
+function keyChips(combo: string): HTMLElement {
+  const wrap = document.createElement("span");
+  wrap.className = "keys";
+  for (const key of combo.split("+").filter(Boolean)) {
+    const kbd = document.createElement("kbd");
+    kbd.textContent = key.trim();
+    wrap.append(kbd);
+  }
+  return wrap;
+}
+
+function chip(text: string, tone?: "warn" | "note"): HTMLElement {
+  const el = document.createElement("span");
+  el.className = tone ? `chip ${tone}` : "chip";
+  el.textContent = text;
+  el.title = text;
+  return el;
+}
+
+function showView(next: View) {
+  view = next;
+  els.dictate.hidden = next !== "dictate";
+  els.settings.hidden = next !== "settings";
+  els.navDictate.classList.toggle("is-active", next === "dictate");
+  els.navSettings.classList.toggle("is-active", next === "settings");
+  els.viewTitle.textContent = next === "dictate" ? "Dictate" : "Settings";
 }
 
 // --- actions ---------------------------------------------------------------
@@ -199,13 +262,14 @@ async function toggleRecording() {
 function showTranscript(result: Transcript, delivery: Delivery | null) {
   els.transcript.value = result.text;
   els.copy.disabled = result.text.length === 0;
-  const fallback = result.fallback_reason
-    ? ` (fell back: ${result.fallback_reason})`
-    : "";
-  const note = result.cleanup_note ? ` - ${result.cleanup_note}` : "";
-  els.meta.textContent = `${result.duration_secs.toFixed(1)}s - ${
-    result.engine
-  }${fallback}${note}`;
+  els.meta.replaceChildren(
+    chip(`${result.duration_secs.toFixed(1)}s`),
+    chip(result.engine),
+  );
+  if (result.fallback_reason) {
+    els.meta.append(chip(`Fell back: ${result.fallback_reason}`, "warn"));
+  }
+  if (result.cleanup_note) els.meta.append(chip(result.cleanup_note, "note"));
   els.original.hidden = result.raw_text === null;
   els.original.open = false;
   els.originalText.textContent = result.raw_text ?? "";
@@ -281,8 +345,8 @@ async function copyTranscript() {
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
-    els.copy.textContent = "Copied";
-    setTimeout(() => (els.copy.textContent = "Copy"), 1200);
+    els.copyLabel.textContent = "Copied";
+    setTimeout(() => (els.copyLabel.textContent = "Copy"), 1200);
   } catch {
     // Fall back to the old selection route if the clipboard API is blocked.
     els.transcript.select();
@@ -292,9 +356,16 @@ async function copyTranscript() {
 
 async function refreshStatus() {
   const s = await invoke<Status>("status");
-  els.kbdHint.textContent = s.hotkey_error
-    ? "Space to start and stop"
-    : `Space here, or ${settings.hotkey} in any app`;
+  els.kbdHint.replaceChildren("Press", keyChips("Space"));
+  if (!s.hotkey_error) {
+    els.kbdHint.append("here, or", keyChips(settings.hotkey), "in any app");
+  } else {
+    els.kbdHint.append("to start and stop");
+  }
+  els.sidebarHotkey.replaceChildren(
+    ...(s.hotkey_error ? ["Not set"] : keyChips(settings.hotkey).childNodes),
+  );
+  renderEngineBadge(s);
   els.hotkeyStatus.textContent =
     s.hotkey_error ?? "Works in any app. Tap to start and stop, or hold to talk";
   els.hotkeyStatus.classList.toggle("warn", s.hotkey_error !== null);
@@ -319,6 +390,23 @@ async function refreshStatus() {
         ? "Ready"
         : "Download a local model or add a Groq key in settings";
   }
+}
+
+function renderEngineBadge(s: Status) {
+  const local = `Local ${settings.local_model} - ${s.gpu ? "GPU" : "CPU"}`;
+  let label: string;
+  let tone: "ok" | "warn" | "error";
+  if (settings.engine === "cloud") {
+    if (s.has_api_key) [label, tone] = ["Groq cloud", "ok"];
+    else if (s.has_local_model) [label, tone] = [`${local} (no Groq key)`, "warn"];
+    else [label, tone] = ["Not set up", "error"];
+  } else {
+    if (s.has_local_model) [label, tone] = [local, "ok"];
+    else if (s.has_api_key) [label, tone] = ["Groq cloud (model missing)", "warn"];
+    else [label, tone] = ["Not set up", "error"];
+  }
+  els.engineLabel.textContent = label;
+  els.engineBadge.dataset.tone = tone;
 }
 
 async function saveApiKey() {
@@ -448,18 +536,65 @@ els.apiKey.addEventListener("keydown", (e) => {
   if (e.key === "Enter") saveApiKey();
 });
 
-els.settingsToggle.addEventListener("click", () => {
-  els.settings.hidden = !els.settings.hidden;
-});
+els.navDictate.addEventListener("click", () => showView("dictate"));
+els.navSettings.addEventListener("click", () => showView("settings"));
+
+const appWindow = getCurrentWindow();
+$("win-min").addEventListener("click", () => appWindow.minimize());
+$("win-max").addEventListener("click", () => appWindow.toggleMaximize());
+// Close is intercepted in Rust and hides to the tray.
+$("win-close").addEventListener("click", () => appWindow.close());
 
 els.groqLink.addEventListener("click", (e) => {
   e.preventDefault();
   openUrl("https://console.groq.com/keys");
 });
 
-// Space toggles recording, but not while typing.
+// Theme is a per-machine display preference, so localStorage is enough. The
+// inline script in index.html applies it before first paint.
+const THEME_KEY = "whispr-theme";
+
+function currentTheme(): Theme {
+  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
+}
+
+function applyTheme(theme: Theme) {
+  document.documentElement.dataset.theme = theme;
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+  } catch {
+    /* storage blocked: the choice only lasts this session */
+  }
+  for (const b of document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]")) {
+    const active = b.dataset.themeChoice === theme;
+    b.classList.toggle("is-active", active);
+    b.setAttribute("aria-checked", String(active));
+  }
+  // Keeps the native window border and shadow in step with the page.
+  appWindow.setTheme(theme).catch(() => {});
+}
+
+for (const b of document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]")) {
+  b.addEventListener("click", () => applyTheme(b.dataset.themeChoice as Theme));
+}
+$("theme-flip").addEventListener("click", () =>
+  applyTheme(currentTheme() === "dark" ? "light" : "dark"),
+);
+applyTheme(currentTheme());
+
+// Ctrl+, opens settings, Escape goes back. Space toggles recording on the
+// Dictate page, but not while typing.
 document.addEventListener("keydown", (e) => {
-  if (e.code !== "Space" || e.repeat) return;
+  if (e.ctrlKey && e.key === ",") {
+    e.preventDefault();
+    showView("settings");
+    return;
+  }
+  if (e.key === "Escape" && view === "settings") {
+    showView("dictate");
+    return;
+  }
+  if (e.code !== "Space" || e.repeat || view !== "dictate") return;
   const target = e.target as HTMLElement | null;
   const typing =
     target instanceof HTMLInputElement ||

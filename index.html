@@ -5,146 +5,285 @@
     <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>whispr</title>
+    <script>
+      // Before first paint, so a light-mode user never sees a dark flash.
+      try {
+        if (localStorage.getItem("whispr-theme") === "light") {
+          document.documentElement.dataset.theme = "light";
+        }
+      } catch {}
+    </script>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
 
   <body>
-    <main class="app">
-      <header class="topbar">
-        <h1>whispr</h1>
-        <button id="settings-toggle" class="icon-btn" type="button" title="Settings">
-          settings
-        </button>
+    <div class="shell">
+      <!-- The window has no native frame (see tauri.conf.json), so this bar
+           is the drag handle and holds the window buttons. Windows 11 still
+           rounds the corners and draws the shadow. -->
+      <header class="titlebar" data-tauri-drag-region>
+        <div class="brand" data-tauri-drag-region>
+          <span class="brand-mark">
+            <svg viewBox="0 0 24 24"><path d="M2 10v3" /><path d="M6 6v11" /><path d="M10 3v18" /><path d="M14 8v7" /><path d="M18 5v13" /><path d="M22 10v3" /></svg>
+          </span>
+          <span class="brand-name" data-tauri-drag-region>whispr</span>
+        </div>
+        <div class="window-controls">
+          <button id="win-min" class="win-btn" type="button" aria-label="Minimize">
+            <svg viewBox="0 0 10 10"><path d="M0 5h10" /></svg>
+          </button>
+          <button id="win-max" class="win-btn" type="button" aria-label="Maximize">
+            <svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" rx="1" /></svg>
+          </button>
+          <button id="win-close" class="win-btn win-close" type="button" aria-label="Close">
+            <svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10" /></svg>
+          </button>
+        </div>
       </header>
 
-      <section id="settings" class="settings" hidden>
-        <div class="field">
-          <span>Hotkey</span>
-          <div class="inline">
-            <input id="hotkey" type="text" spellcheck="false" autocomplete="off" />
-            <button id="save-hotkey" class="btn" type="button">Set</button>
+      <aside class="sidebar">
+        <nav class="nav">
+          <button id="nav-dictate" class="nav-item is-active" type="button" data-view="dictate">
+            <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><path d="M12 19v3" /></svg>
+            <span>Dictate</span>
+          </button>
+          <button id="nav-settings" class="nav-item" type="button" data-view="settings">
+            <svg viewBox="0 0 24 24"><path d="M20 7h-9" /><path d="M14 17H5" /><circle cx="17" cy="17" r="3" /><circle cx="7" cy="7" r="3" /></svg>
+            <span>Settings</span>
+            <span class="nav-kbd"><kbd>Ctrl</kbd><kbd>,</kbd></span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <span class="sidebar-label">Hotkey in any app</span>
+          <div class="sidebar-footer-row">
+            <span id="sidebar-hotkey" class="keys"></span>
+            <button id="theme-flip" class="icon-btn" type="button" title="Switch theme">
+              <svg class="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></svg>
+              <svg class="moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></svg>
+            </button>
           </div>
-          <small id="hotkey-status" class="hint">
-            Works in any app. Tap to start and stop, or hold to talk
-          </small>
-          <label class="check">
-            <input id="auto-paste" type="checkbox" />
-            <span>Paste into the app you are typing in</span>
-          </label>
-          <small class="hint">Off: the text is copied to the clipboard instead</small>
-          <label class="check">
-            <input id="autostart" type="checkbox" />
-            <span>Start when you log in</span>
-          </label>
-          <small id="autostart-hint" class="hint">Opens straight to the tray, hotkey ready</small>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="main-header">
+          <h1 id="view-title">Dictate</h1>
+          <span id="engine-badge" class="badge" data-tone="muted">
+            <span class="badge-dot"></span>
+            <span id="engine-label">Loading</span>
+          </span>
         </div>
 
-        <div class="field">
-          <span>Cleanup</span>
-          <label class="check">
-            <input id="cleanup" type="checkbox" />
-            <span>Polish the text with AI before pasting</span>
-          </label>
-          <small class="hint">
-            Fixes punctuation, drops filler words and anything you take back ("no
-            wait, make it Friday"). Uses your Groq key
-          </small>
+        <div class="main-body">
+          <!-- Dictate ---------------------------------------------------- -->
+          <section id="view-dictate" class="page">
+            <div id="recorder" class="recorder" data-phase="idle">
+              <button id="record" class="record" type="button" aria-label="Start recording">
+                <span class="dot"></span>
+                <span class="spinner"></span>
+              </button>
+              <div class="recorder-text">
+                <p id="status" class="recorder-title">Loading...</p>
+                <p id="kbd-hint" class="recorder-sub">Space to start and stop</p>
+              </div>
+              <div id="meter" class="meter" aria-hidden="true"></div>
+            </div>
+
+            <div class="toolbar">
+              <label class="picker" for="mic">
+                <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><path d="M12 19v3" /></svg>
+                <span class="picker-label">Microphone</span>
+                <select id="mic"></select>
+              </label>
+            </div>
+
+            <p id="error" class="error" hidden></p>
+
+            <div class="card transcript-card">
+              <div class="card-header">
+                <span class="card-title">Transcript</span>
+                <div id="meta" class="meta"></div>
+                <button id="copy" class="btn btn-secondary btn-sm" type="button" disabled>
+                  <svg viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
+                  <span id="copy-label">Copy</span>
+                </button>
+              </div>
+              <textarea
+                id="transcript"
+                placeholder="Your transcript will appear here"
+                spellcheck="false"
+              ></textarea>
+              <details id="original" class="original" hidden>
+                <summary>Before cleanup</summary>
+                <p id="original-text"></p>
+              </details>
+            </div>
+          </section>
+
+          <!-- Settings --------------------------------------------------- -->
+          <section id="settings" class="page page-settings" hidden>
+            <div class="group">
+              <h2 class="group-title">Appearance</h2>
+              <div class="card">
+                <div class="row">
+                  <div class="row-text">
+                    <span class="row-label">Theme</span>
+                    <p class="row-hint">Dark by default</p>
+                  </div>
+                  <div class="row-control">
+                    <div class="segmented" role="radiogroup" aria-label="Theme">
+                      <button type="button" role="radio" data-theme-choice="dark">
+                        <svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></svg>
+                        Dark
+                      </button>
+                      <button type="button" role="radio" data-theme-choice="light">
+                        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></svg>
+                        Light
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="group">
+              <h2 class="group-title">Dictation</h2>
+              <div class="card">
+                <div class="row">
+                  <div class="row-text">
+                    <label class="row-label" for="hotkey">Hotkey</label>
+                    <p id="hotkey-status" class="row-hint">
+                      Works in any app. Tap to start and stop, or hold to talk
+                    </p>
+                  </div>
+                  <div class="row-control">
+                    <input id="hotkey" class="input mono" type="text" spellcheck="false" autocomplete="off" />
+                    <button id="save-hotkey" class="btn btn-secondary" type="button">Set</button>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="row-text">
+                    <label class="row-label" for="auto-paste">Paste into the active app</label>
+                    <p class="row-hint">Off: the text is copied to the clipboard instead</p>
+                  </div>
+                  <div class="row-control">
+                    <input id="auto-paste" class="switch" type="checkbox" />
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="row-text">
+                    <label class="row-label" for="autostart">Start when you log in</label>
+                    <p id="autostart-hint" class="row-hint">Opens straight to the tray, hotkey ready</p>
+                  </div>
+                  <div class="row-control">
+                    <input id="autostart" class="switch" type="checkbox" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="group">
+              <h2 class="group-title">Transcription</h2>
+              <div class="card">
+                <div class="row">
+                  <div class="row-text">
+                    <label class="row-label" for="engine">Engine</label>
+                    <p class="row-hint">The other engine takes over if this one fails</p>
+                  </div>
+                  <div class="row-control">
+                    <select id="engine" class="select">
+                      <option value="cloud">Groq cloud - fastest, needs a key</option>
+                      <option value="local">Local - private, works offline</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="row-text">
+                    <label class="row-label" for="model">Groq model</label>
+                    <p class="row-hint">Used by the cloud engine</p>
+                  </div>
+                  <div class="row-control">
+                    <select id="model" class="select">
+                      <option value="whisper-large-v3-turbo">Turbo - fast, cheap (default)</option>
+                      <option value="whisper-large-v3">Large v3 - slower, most accurate</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="row row-wrap">
+                  <div class="row-text">
+                    <label class="row-label" for="local-model">Local model</label>
+                    <p id="local-status" class="row-hint"></p>
+                  </div>
+                  <div class="row-control">
+                    <select id="local-model" class="select"></select>
+                    <button id="download-model" class="btn btn-primary" type="button">Download</button>
+                  </div>
+                  <progress id="download-progress" max="1" value="0" hidden></progress>
+                </div>
+              </div>
+            </div>
+
+            <div class="group">
+              <h2 class="group-title">Groq</h2>
+              <div class="card">
+                <div class="row">
+                  <div class="row-text">
+                    <label class="row-label" for="api-key">API key</label>
+                    <p id="key-status" class="row-hint"></p>
+                    <p class="row-hint">
+                      No key yet? <a href="#" id="groq-link">Create one at console.groq.com</a>.
+                      The free tier covers 8 hours of audio a day
+                    </p>
+                  </div>
+                  <div class="row-control">
+                    <input
+                      id="api-key"
+                      class="input mono"
+                      type="password"
+                      placeholder="gsk_..."
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                    <button id="save-key" class="btn btn-secondary" type="button">Save</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="group">
+              <h2 class="group-title">Cleanup</h2>
+              <div class="card">
+                <div class="row">
+                  <div class="row-text">
+                    <label class="row-label" for="cleanup">Polish the text with AI</label>
+                    <p class="row-hint">
+                      Fixes punctuation, drops filler words and anything you take back
+                      ("no wait, make it Friday"). Uses your Groq key
+                    </p>
+                  </div>
+                  <div class="row-control">
+                    <input id="cleanup" class="switch" type="checkbox" />
+                  </div>
+                </div>
+                <div class="row row-stack">
+                  <div class="row-text">
+                    <label class="row-label" for="vocabulary">Vocabulary</label>
+                    <p class="row-hint">Spelled exactly like this in your transcripts</p>
+                  </div>
+                  <textarea
+                    id="vocabulary"
+                    class="input"
+                    rows="4"
+                    spellcheck="false"
+                    placeholder="One per line: names, products, jargon"
+                  ></textarea>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
-
-        <label class="field">
-          <span>Vocabulary</span>
-          <textarea
-            id="vocabulary"
-            rows="3"
-            spellcheck="false"
-            placeholder="One per line: names, products, jargon"
-          ></textarea>
-          <small class="hint">Spelled exactly like this in your transcripts</small>
-        </label>
-
-        <label class="field">
-          <span>Engine</span>
-          <select id="engine">
-            <option value="cloud">Groq cloud - fastest, needs a key</option>
-            <option value="local">Local - private, works offline</option>
-          </select>
-          <small class="hint">The other engine takes over if this one fails</small>
-        </label>
-
-        <div class="field">
-          <span>Local model</span>
-          <div class="inline">
-            <select id="local-model"></select>
-            <button id="download-model" class="btn" type="button">Download</button>
-          </div>
-          <progress id="download-progress" max="1" value="0" hidden></progress>
-          <small id="local-status" class="hint"></small>
-        </div>
-
-        <label class="field">
-          <span>Groq API key</span>
-          <div class="inline">
-            <input
-              id="api-key"
-              type="password"
-              placeholder="gsk_..."
-              autocomplete="off"
-              spellcheck="false"
-            />
-            <button id="save-key" class="btn" type="button">Save</button>
-          </div>
-          <small id="key-status" class="hint"></small>
-          <small class="hint">
-            No key yet?
-            <a href="#" id="groq-link">Create one at console.groq.com</a> - the free
-            tier covers 8 hours of audio a day.
-          </small>
-        </label>
-
-        <label class="field">
-          <span>Microphone</span>
-          <select id="mic"></select>
-        </label>
-
-        <label class="field">
-          <span>Groq model</span>
-          <select id="model">
-            <option value="whisper-large-v3-turbo">
-              Turbo - fast, cheap (default)
-            </option>
-            <option value="whisper-large-v3">
-              Large v3 - slower, most accurate
-            </option>
-          </select>
-        </label>
-      </section>
-
-      <section class="stage">
-        <button id="record" class="record" type="button" aria-label="Start recording">
-          <span id="level-ring" class="ring"></span>
-          <span class="dot"></span>
-        </button>
-        <p id="status" class="status">Loading...</p>
-        <p id="kbd-hint" class="hint kbd-hint">Space to start and stop</p>
-      </section>
-
-      <section class="result">
-        <textarea
-          id="transcript"
-          placeholder="Your transcript will appear here"
-          spellcheck="false"
-        ></textarea>
-        <details id="original" class="original" hidden>
-          <summary>Before cleanup</summary>
-          <p id="original-text"></p>
-        </details>
-        <div class="result-actions">
-          <span id="meta" class="hint"></span>
-          <button id="copy" class="btn" type="button" disabled>Copy</button>
-        </div>
-      </section>
-
-      <p id="error" class="error" hidden></p>
-    </main>
+      </main>
+    </div>
   </body>
 </html>
