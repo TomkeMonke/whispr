@@ -362,7 +362,11 @@ async fn transcribe_capture(state: &AppState) -> Result<Transcript, String> {
         }
     }
     let (raw, mut engine) = transcribed.ok_or_else(|| NOTHING_READY.to_string())?;
-    let text = postprocess(&raw);
+    let mut text = postprocess(&raw);
+    // A lone "." or "..." is Whisper filling a pause, never something said.
+    if !text.chars().any(char::is_alphanumeric) {
+        text.clear();
+    }
 
     // Cleanup. Skipped when the cloud was just unreachable: it is the same
     // server, and waiting out its timeout would only delay the paste.
@@ -494,6 +498,28 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
         manager.disable()
     }
     .map_err(|e| e.to_string())
+}
+
+/// Start at login is on by default: switch it on the first time the installed
+/// app runs. The marker file makes that a one-off, so switching it off in
+/// settings sticks.
+fn default_autostart_on(app: &AppHandle) {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let Ok(dir) = app.path().app_config_dir() else {
+        return;
+    };
+    let marker = dir.join("autostart-defaulted");
+    if marker.exists() {
+        return;
+    }
+    match app.autolaunch().enable() {
+        Ok(()) => {
+            let _ = std::fs::write(&marker, "");
+        }
+        Err(e) => eprintln!("[whispr] could not turn on start at login: {e}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -662,6 +688,7 @@ pub fn run() {
             }
 
             build_tray(app)?;
+            default_autostart_on(app.handle());
 
             // The window starts hidden (tauri.conf.json). A normal launch shows
             // it; a start at login leaves whispr in the tray with the hotkey armed.

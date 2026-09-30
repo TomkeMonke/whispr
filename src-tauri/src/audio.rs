@@ -32,6 +32,27 @@ const MIN_DURATION_SECS: f32 = 0.25;
 /// to the floor and silent clips start slipping through into paid API calls.
 const SILENCE_PEAK: f32 = 0.015;
 
+/// Frame length for the speech check: short enough that a key click fills at
+/// most a couple of frames, long enough to smooth over single samples.
+const FRAME_SECS: f32 = 0.02;
+
+/// A frame counts as voiced when its RMS is this many times the clip's own
+/// noise floor (its quietest 10% of frames), clamped to a sane range: the
+/// ceiling keeps a clip with no pauses in it (all speech, so the "floor" is
+/// speech too) from gating itself out.
+const VOICED_OVER_FLOOR: f32 = 3.0;
+const MIN_VOICED_RMS: f32 = 0.01;
+const MAX_VOICED_RMS: f32 = 0.03;
+
+/// Longest unbroken voiced stretch a clip needs to count as speech. Even "yes"
+/// holds its vowel for 200+ ms; clicks, taps and bumps last 20-40 ms. Measured
+/// on the desktop mic: an empty clip peaked at 20 ms, the shortest real phrase
+/// at 420 ms.
+///
+/// Whisper never returns nothing: fed an empty clip it invents a stock line
+/// ("Thank you.", "you", "."), so the clip has to be stopped before it.
+const MIN_VOICED_RUN_SECS: f32 = 0.1;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
     #[error("no microphone available")]
@@ -48,6 +69,8 @@ pub enum AudioError {
     TooShort,
     #[error("nothing was recorded - check the microphone is not muted")]
     Silent,
+    #[error("no speech heard")]
+    NoSpeech,
     #[error("capture thread panicked")]
     ThreadPanic,
     /// Startup failed and the real error was already handed to `start` over the
@@ -84,8 +107,35 @@ impl Captured {
         if self.peak() < SILENCE_PEAK {
             return Err(AudioError::Silent);
         }
+        if longest_voiced_run_secs(&self.mono, self.sample_rate) < MIN_VOICED_RUN_SECS {
+            return Err(AudioError::NoSpeech);
+        }
         Ok(resample_mono(&self.mono, self.sample_rate, TARGET_RATE))
     }
+}
+
+/// The longest unbroken stretch of frames that stand clear of the clip's own
+/// noise floor. Relative to the floor, so a noisy mic and a quiet one both work.
+fn longest_voiced_run_secs(mono: &[f32], rate: u32) -> f32 {
+    let frame = ((rate as f32 * FRAME_SECS) as usize).max(1);
+    let rms: Vec<f32> = mono
+        .chunks_exact(frame)
+        .map(|c| (c.iter().map(|v| v * v).sum::<f32>() / frame as f32).sqrt())
+        .collect();
+    if rms.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = rms.clone();
+    sorted.sort_by(f32::total_cmp);
+    let floor = sorted[sorted.len() / 10];
+    let threshold = (floor * VOICED_OVER_FLOOR).clamp(MIN_VOICED_RMS, MAX_VOICED_RMS);
+
+    let (mut run, mut best) = (0usize, 0usize);
+    for level in rms {
+        run = if level > threshold { run + 1 } else { 0 };
+        best = best.max(run);
+    }
+    best as f32 * frame as f32 / rate as f32
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +513,57 @@ mod tests {
         let hi = x.len() - x.len() / 10;
         let slice = &x[lo..hi];
         (slice.iter().map(|v| (v * v) as f64).sum::<f64>() / slice.len() as f64).sqrt() as f32
+    }
+
+    /// Room hiss at `level`, deterministic so the tests are stable.
+    fn hiss(rate: u32, secs: f64, level: f32) -> Vec<f32> {
+        let mut x: u32 = 12345;
+        (0..(rate as f64 * secs) as usize)
+            .map(|_| {
+                x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ((x >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * level
+            })
+            .collect()
+    }
+
+    fn captured(mono: Vec<f32>, rate: u32) -> Captured {
+        Captured { mono, sample_rate: rate }
+    }
+
+    #[test]
+    fn clicks_in_a_quiet_room_are_not_speech() {
+        let rate = 48_000;
+        let mut mono = hiss(rate, 1.5, 0.01);
+        // Two key clicks: loud, but 5 ms each.
+        for start in [20_000, 50_000] {
+            for s in &mut mono[start..start + 240] {
+                *s = 0.4;
+            }
+        }
+        assert!(matches!(
+            captured(mono, rate).to_pcm_16k(),
+            Err(AudioError::NoSpeech)
+        ));
+    }
+
+    #[test]
+    fn a_short_word_over_hiss_is_speech() {
+        let rate = 48_000;
+        let mut mono = hiss(rate, 1.5, 0.01);
+        // A 250 ms vowel, about a quiet "yes".
+        let word = tone(220.0, rate, 0.25);
+        for (s, w) in mono[24_000..].iter_mut().zip(word) {
+            *s += w * 0.08;
+        }
+        assert!(captured(mono, rate).to_pcm_16k().is_ok());
+    }
+
+    #[test]
+    fn a_clip_that_is_all_speech_still_counts() {
+        // No quiet frames, so the floor is the speech itself.
+        let rate = 16_000;
+        let mono: Vec<f32> = tone(200.0, rate, 1.0).into_iter().map(|v| v * 0.3).collect();
+        assert!(longest_voiced_run_secs(&mono, rate) > 0.5);
     }
 
     #[test]
