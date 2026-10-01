@@ -28,8 +28,9 @@ pub struct Settings {
     pub model: String,
     /// Local model id, from `local::MODELS`.
     pub local_model: String,
-    /// Pinning the language skips Whisper's detection pass, which is both
-    /// slightly faster and more accurate on short clips.
+    /// The language dictated in, one of `LANGUAGES`. Pinning it skips
+    /// Whisper's detection pass, which is both slightly faster and more
+    /// accurate on short clips.
     pub language: String,
     /// Global shortcut, in the plugin's format, e.g. "Ctrl+Shift+Space".
     pub hotkey: String,
@@ -67,7 +68,7 @@ impl Settings {
         if local::find(&self.local_model).is_none() {
             self.local_model = local::default_model().to_string();
         }
-        if self.language.trim().is_empty() {
+        if !LANGUAGES.contains(&self.language.as_str()) {
             self.language = "en".to_string();
         }
         if self.microphone.as_deref().map(str::trim) == Some("") {
@@ -81,6 +82,10 @@ impl Settings {
         self
     }
 }
+
+/// Languages whispr can be set to: English and Polish. Each has its own
+/// cleanup prompt (see `cleanup.rs`).
+pub const LANGUAGES: &[&str] = &["en", "pl"];
 
 /// Most terms a vocabulary keeps, and the longest term. Both bound the prompt
 /// sizes: Whisper's hint is capped at 224 tokens.
@@ -199,6 +204,22 @@ mod tests {
         }
         .sanitised();
         assert_eq!(s.vocabulary, vec!["drillr", "PostHog"]);
+    }
+
+    #[test]
+    fn polish_is_kept_and_unknown_languages_fall_back() {
+        let pl = Settings {
+            language: "pl".into(),
+            ..Default::default()
+        }
+        .sanitised();
+        assert_eq!(pl.language, "pl");
+        let other = Settings {
+            language: "xx".into(),
+            ..Default::default()
+        }
+        .sanitised();
+        assert_eq!(other.language, "en");
     }
 
     #[test]

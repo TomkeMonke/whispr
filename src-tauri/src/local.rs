@@ -27,20 +27,24 @@ pub struct ModelSpec {
     pub label: &'static str,
     file: &'static str,
     size: u64,
+    /// An `.en` build: it can only transcribe English. Asked for any other
+    /// language it answers in English anyway, so it is kept out of the route.
+    english_only: bool,
     /// SHA-256 of the file, from Hugging Face's LFS pointer. Checked after every
     /// download, so a truncated or tampered file never gets loaded.
     sha256: &'static str,
 }
 
-/// English-only (`.en`) models where they exist: whispr pins English, and the
-/// `.en` variants beat their multilingual twins at the same size. Turbo has no
-/// `.en` build, but is still the most accurate of the three.
+/// English-only (`.en`) builds where they exist: they beat their multilingual
+/// twins at the same size. Turbo has no `.en` build, which makes it the one
+/// local model for Polish - and still the most accurate of the three.
 pub const MODELS: &[ModelSpec] = &[
     ModelSpec {
         id: "base.en",
         label: "Base - fastest",
         file: "ggml-base.en-q5_1.bin",
         size: 59_721_011,
+        english_only: true,
         sha256: "4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f",
     },
     ModelSpec {
@@ -48,6 +52,7 @@ pub const MODELS: &[ModelSpec] = &[
         label: "Small - balanced",
         file: "ggml-small.en-q5_1.bin",
         size: 190_098_681,
+        english_only: true,
         sha256: "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
     },
     ModelSpec {
@@ -55,6 +60,7 @@ pub const MODELS: &[ModelSpec] = &[
         label: "Turbo - most accurate",
         file: "ggml-large-v3-turbo-q5_0.bin",
         size: 574_041_195,
+        english_only: false,
         sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
     },
 ];
@@ -74,6 +80,11 @@ pub fn find(id: &str) -> Option<&'static ModelSpec> {
     MODELS.iter().find(|m| m.id == id)
 }
 
+/// Whether the model can transcribe `language` at all.
+pub fn speaks(spec: &ModelSpec, language: &str) -> bool {
+    language == "en" || !spec.english_only
+}
+
 pub fn model_path(dir: &Path, spec: &ModelSpec) -> PathBuf {
     dir.join(spec.file)
 }
@@ -90,6 +101,7 @@ pub struct ModelInfo {
     label: &'static str,
     size_bytes: u64,
     downloaded: bool,
+    english_only: bool,
 }
 
 pub fn catalog(dir: &Path) -> Vec<ModelInfo> {
@@ -100,6 +112,7 @@ pub fn catalog(dir: &Path) -> Vec<ModelInfo> {
             label: m.label,
             size_bytes: m.size,
             downloaded: is_downloaded(dir, m),
+            english_only: m.english_only,
         })
         .collect()
 }
@@ -108,6 +121,8 @@ pub fn catalog(dir: &Path) -> Vec<ModelInfo> {
 pub enum LocalError {
     #[error("the local model is not downloaded yet - get it in settings")]
     NoModel,
+    #[error("the local model is English-only - pick Turbo in settings for {0}")]
+    WrongLanguage(String),
     #[error("unknown local model '{0}'")]
     UnknownModel(String),
     #[error("model download failed: {0}")]
@@ -253,6 +268,9 @@ impl Engine {
         prompt: Option<&str>,
     ) -> Result<String, LocalError> {
         let spec = find(model_id).ok_or_else(|| LocalError::UnknownModel(model_id.into()))?;
+        if !speaks(spec, language) {
+            return Err(LocalError::WrongLanguage(language_name(language).into()));
+        }
         let ctx = self.context(dir, spec)?;
         let mut state = ctx
             .create_state()
@@ -288,6 +306,14 @@ impl Engine {
             .filter_map(|seg| seg.to_str_lossy().ok().map(|s| s.into_owned()))
             .collect();
         Ok(join_segments(&segments))
+    }
+}
+
+fn language_name(code: &str) -> &str {
+    match code {
+        "pl" => "Polish",
+        "en" => "English",
+        other => other,
     }
 }
 
@@ -334,6 +360,14 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), MODELS.len());
         assert!(find(default_model()).is_some());
+    }
+
+    #[test]
+    fn english_only_models_do_not_speak_polish() {
+        let small = find("small.en").unwrap();
+        let turbo = find("large-v3-turbo").unwrap();
+        assert!(speaks(small, "en") && !speaks(small, "pl"));
+        assert!(speaks(turbo, "en") && speaks(turbo, "pl"));
     }
 
     #[test]

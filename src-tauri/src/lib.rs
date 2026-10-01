@@ -6,6 +6,8 @@
 //! and for reading back the last result; closing it leaves whispr in the tray.
 
 mod audio;
+#[cfg(test)]
+mod bench;
 mod cleanup;
 mod groq;
 mod hotkey;
@@ -68,6 +70,8 @@ pub struct Transcript {
     cleanup_note: Option<String>,
     duration_secs: f32,
     engine: String,
+    /// The language it was dictated in, e.g. "pl".
+    language: String,
     /// Set when the primary engine failed and the other one answered instead.
     fallback_reason: Option<String>,
     /// Where the raw audio was kept, if it could be saved.
@@ -80,6 +84,9 @@ pub struct Status {
     has_api_key: bool,
     /// The selected local model is on disk.
     has_local_model: bool,
+    /// The selected local model can transcribe the selected language: false
+    /// for an English-only model while dictating in Polish.
+    local_speaks: bool,
     /// This build runs the local engine on the GPU.
     gpu: bool,
     hotkey_error: Option<String>,
@@ -131,6 +138,44 @@ fn postprocess(raw: &str) -> String {
         .join("\n")
 }
 
+/// Whisper learned subtitle credits from its training data and sometimes
+/// appends one after a pause - in Polish, "Napisy stworzone przez społeczność
+/// Amara.org". Only credits nobody dictates are matched: a stock phrase such
+/// as "Dziękuję." or "Thank you." is often really said, so it stays.
+const CREDITS: &[&str] = &["amara.org"];
+
+/// Drop every sentence that carries a subtitle credit.
+fn drop_hallucinations(raw: &str) -> String {
+    sentences(raw)
+        .into_iter()
+        .filter(|s| {
+            let lower = s.to_lowercase();
+            !CREDITS.iter().any(|c| lower.contains(c))
+        })
+        .collect()
+}
+
+/// Split after sentence-ending punctuation that is followed by whitespace or
+/// the end of the text, so "Amara.org" stays one piece. Each piece keeps its
+/// leading whitespace: joined back up they give the original text.
+fn sentences(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        let at_break = chars.peek().is_none_or(|&(_, next)| next.is_whitespace());
+        if matches!(c, '.' | '!' | '?' | '…') && at_break {
+            let end = i + c.len_utf8();
+            out.push(&text[start..end]);
+            start = end;
+        }
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Routing
 // ---------------------------------------------------------------------------
@@ -158,6 +203,15 @@ fn local_model_ready(models_dir: &Path, id: &str) -> bool {
     local::find(id).is_some_and(|m| local::is_downloaded(models_dir, m))
 }
 
+fn local_model_speaks(id: &str, language: &str) -> bool {
+    local::find(id).is_some_and(|m| local::speaks(m, language))
+}
+
+/// Why nothing can run, when the only thing missing is a model that speaks
+/// the language: an English-only one is on disk, but the dictation is Polish.
+const WRONG_LANGUAGE_ONLY: &str =
+    "the local model is English-only - pick Turbo in settings, or add a Groq API key";
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -169,11 +223,15 @@ fn list_microphones() -> Vec<String> {
 
 #[tauri::command]
 fn status(state: State<'_, AppState>) -> Status {
-    let local_model = state.settings.lock().unwrap().local_model.clone();
+    let (local_model, language) = {
+        let s = state.settings.lock().unwrap();
+        (s.local_model.clone(), s.language.clone())
+    };
     Status {
         recording: state.recorder.is_recording(),
         has_api_key: matches!(secrets::get(), Ok(Some(_))),
         has_local_model: local_model_ready(&state.models_dir, &local_model),
+        local_speaks: local_model_speaks(&local_model, &language),
         gpu: local::GPU,
         hotkey_error: state.hotkey_error.lock().unwrap().clone(),
     }
@@ -301,10 +359,11 @@ async fn transcribe_capture(state: &AppState) -> Result<Transcript, String> {
     let s = state.settings.lock().unwrap().clone();
 
     let api_key = secrets::get().ok().flatten();
-    let has_model = local_model_ready(&state.models_dir, &s.local_model);
-    let engines = route(s.engine, api_key.is_some(), has_model);
+    let on_disk = local_model_ready(&state.models_dir, &s.local_model);
+    let speaks = local_model_speaks(&s.local_model, &s.language);
+    let engines = route(s.engine, api_key.is_some(), on_disk && speaks);
     if engines.is_empty() {
-        return Err(NOTHING_READY.into());
+        return Err(if on_disk { WRONG_LANGUAGE_ONLY } else { NOTHING_READY }.into());
     }
 
     let pcm = Arc::new(pcm);
@@ -362,7 +421,7 @@ async fn transcribe_capture(state: &AppState) -> Result<Transcript, String> {
         }
     }
     let (raw, mut engine) = transcribed.ok_or_else(|| NOTHING_READY.to_string())?;
-    let mut text = postprocess(&raw);
+    let mut text = postprocess(&drop_hallucinations(&raw));
     // A lone "." or "..." is Whisper filling a pause, never something said.
     if !text.chars().any(char::is_alphanumeric) {
         text.clear();
@@ -373,7 +432,7 @@ async fn transcribe_capture(state: &AppState) -> Result<Transcript, String> {
     let cloud_failed = s.engine == Engine::Cloud && fallback_reason.is_some();
     let (text, raw_text, cleanup_note) = match api_key.as_deref() {
         Some(key) if s.cleanup && !cloud_failed && cleanup::worth_cleaning(&text) => {
-            match cleanup::clean(&state.http, key, &text, &s.vocabulary).await {
+            match cleanup::clean(&state.http, key, &text, &s.vocabulary, &s.language).await {
                 Ok(cleaned) => {
                     engine.push_str(" + cleanup");
                     let cleaned = postprocess(&cleaned);
@@ -392,6 +451,7 @@ async fn transcribe_capture(state: &AppState) -> Result<Transcript, String> {
         cleanup_note,
         duration_secs,
         engine,
+        language: s.language,
         fallback_reason,
         audio_path,
     })
@@ -652,7 +712,8 @@ pub fn run() {
             // first - it is the primary, or there is no key for the cloud - so
             // the first dictation does not pay for it.
             let has_key = matches!(secrets::get(), Ok(Some(_)));
-            if loaded.engine == Engine::Local || !has_key {
+            let speaks = local_model_speaks(&loaded.local_model, &loaded.language);
+            if speaks && (loaded.engine == Engine::Local || !has_key) {
                 let (local, dir, model) =
                     (local.clone(), models_dir.clone(), loaded.local_model.clone());
                 std::thread::spawn(move || local.warm(&dir, &model));
@@ -755,6 +816,28 @@ mod tests {
             "1. Fix the login bug.\n2. Update the copy."
         );
         assert_eq!(postprocess("a \r\nb"), "a\nb");
+    }
+
+    #[test]
+    fn subtitle_credits_are_dropped() {
+        assert_eq!(
+            drop_hallucinations("Wyślij to jutro. Napisy stworzone przez społeczność Amara.org"),
+            "Wyślij to jutro."
+        );
+        assert_eq!(
+            postprocess(&drop_hallucinations(
+                "Send it tomorrow. Subtitles by the Amara.org community. "
+            )),
+            "Send it tomorrow."
+        );
+        assert_eq!(drop_hallucinations("Napisy stworzone przez społeczność Amara.org."), "");
+    }
+
+    #[test]
+    fn real_speech_survives_the_credit_filter() {
+        let said = "Dziękuję. Zapisz plik config.json, a potem... wyślij go!\nGotowe?";
+        assert_eq!(drop_hallucinations(said), said);
+        assert_eq!(drop_hallucinations("Thank you."), "Thank you.");
     }
 
     #[test]

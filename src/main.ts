@@ -12,12 +12,17 @@ type Theme = "dark" | "light";
 
 type Engine = "cloud" | "local";
 
+type Language = "en" | "pl";
+
+// Native names, as language pickers usually show them.
+const LANGUAGE_NAMES: Record<Language, string> = { en: "English", pl: "Polski" };
+
 interface Settings {
   microphone: string | null;
   engine: Engine;
   model: string;
   local_model: string;
-  language: string;
+  language: Language;
   hotkey: string;
   auto_paste: boolean;
   cleanup: boolean;
@@ -30,6 +35,7 @@ interface Transcript {
   cleanup_note: string | null;
   duration_secs: number;
   engine: string;
+  language: Language;
   fallback_reason: string | null;
   audio_path: string | null;
 }
@@ -38,6 +44,8 @@ interface Status {
   recording: boolean;
   has_api_key: boolean;
   has_local_model: boolean;
+  // False for an English-only model while dictating in Polish.
+  local_speaks: boolean;
   gpu: boolean;
   hotkey_error: string | null;
 }
@@ -57,6 +65,7 @@ interface ModelInfo {
   label: string;
   size_bytes: number;
   downloaded: boolean;
+  english_only: boolean;
 }
 
 interface DownloadProgress {
@@ -227,6 +236,7 @@ function showTranscript(result: Transcript, delivery: Delivery | null) {
   els.meta.replaceChildren(
     chip(`${result.duration_secs.toFixed(1)}s`),
     chip(result.engine),
+    chip(LANGUAGE_NAMES[result.language] ?? result.language),
   );
   if (result.fallback_reason) {
     els.meta.append(chip(`Fell back: ${result.fallback_reason}`, "warn"));
@@ -339,31 +349,42 @@ async function refreshStatus() {
 
   if (!downloading) {
     const model = models.find((m) => m.id === settings.local_model);
-    els.localStatus.textContent = s.has_local_model
-      ? `Downloaded - runs on the ${s.gpu ? "GPU" : "CPU"}`
-      : `Not downloaded - ${megabytes(model?.size_bytes ?? 0)}, one time`;
-    els.localStatus.classList.toggle("warn", !s.has_local_model);
+    if (!s.has_local_model) {
+      els.localStatus.textContent = `Not downloaded - ${megabytes(model?.size_bytes ?? 0)}, one time`;
+    } else if (!s.local_speaks) {
+      els.localStatus.textContent = `English-only - pick Turbo to dictate in ${
+        LANGUAGE_NAMES[settings.language]
+      } offline`;
+    } else {
+      els.localStatus.textContent = `Downloaded - runs on the ${s.gpu ? "GPU" : "CPU"}`;
+    }
+    els.localStatus.classList.toggle("warn", !s.has_local_model || !s.local_speaks);
     els.downloadModel.hidden = s.has_local_model;
   }
 
   if (phase === "idle") {
     els.status.textContent =
-      s.has_api_key || s.has_local_model
+      s.has_api_key || (s.has_local_model && s.local_speaks)
         ? "Ready"
-        : "Download a local model or add a Groq key in settings";
+        : s.has_local_model
+          ? "The local model is English-only - pick Turbo or add a Groq key in settings"
+          : "Download a local model or add a Groq key in settings";
   }
 }
 
 function renderEngineBadge(s: Status) {
   const local = `Local ${settings.local_model} - ${s.gpu ? "GPU" : "CPU"}`;
+  const localReady = s.has_local_model && s.local_speaks;
   let label: string;
   let tone: "ok" | "warn" | "error";
   if (settings.engine === "cloud") {
     if (s.has_api_key) [label, tone] = ["Groq cloud", "ok"];
-    else if (s.has_local_model) [label, tone] = [`${local} (no Groq key)`, "warn"];
+    else if (localReady) [label, tone] = [`${local} (no Groq key)`, "warn"];
     else [label, tone] = ["Not set up", "error"];
   } else {
-    if (s.has_local_model) [label, tone] = [local, "ok"];
+    if (localReady) [label, tone] = [local, "ok"];
+    else if (s.has_api_key && s.has_local_model)
+      [label, tone] = ["Groq cloud (local model is English-only)", "warn"];
     else if (s.has_api_key) [label, tone] = ["Groq cloud (model missing)", "warn"];
     else [label, tone] = ["Not set up", "error"];
   }
@@ -411,7 +432,8 @@ async function loadLocalModels() {
   for (const m of models) {
     const opt = document.createElement("option");
     opt.value = m.id;
-    opt.textContent = `${m.label} (${megabytes(m.size_bytes)})`;
+    const only = m.english_only ? ", English-only" : "";
+    opt.textContent = `${m.label}${only} (${megabytes(m.size_bytes)})`;
     els.localModel.append(opt);
   }
   els.localModel.value = settings.local_model;
@@ -460,6 +482,22 @@ async function persistSettings() {
   }
 }
 
+function renderLanguage() {
+  for (const b of document.querySelectorAll<HTMLButtonElement>("[data-language]")) {
+    const active = b.dataset.language === settings.language;
+    b.classList.toggle("is-active", active);
+    b.setAttribute("aria-checked", String(active));
+  }
+}
+
+async function setLanguage(language: Language) {
+  if (language === settings.language) return;
+  clearError();
+  settings = { ...settings, language };
+  renderLanguage();
+  await persistSettings();
+}
+
 // --- wiring ----------------------------------------------------------------
 
 els.record.addEventListener("click", toggleRecording);
@@ -481,6 +519,9 @@ els.vocabulary.addEventListener("change", async () => {
   els.vocabulary.value = settings.vocabulary.join("\n");
 });
 els.saveHotkey.addEventListener("click", saveHotkey);
+for (const b of document.querySelectorAll<HTMLButtonElement>("[data-language]")) {
+  b.addEventListener("click", () => setLanguage(b.dataset.language as Language));
+}
 els.hotkey.addEventListener("keydown", (e) => {
   if (e.key === "Enter") saveHotkey();
 });
@@ -575,6 +616,7 @@ async function init() {
     els.hotkey.value = settings.hotkey;
     els.autoPaste.checked = settings.auto_paste;
     els.cleanup.checked = settings.cleanup;
+    renderLanguage();
     els.vocabulary.value = settings.vocabulary.join("\n");
     await loadMicrophones();
     await loadLocalModels();

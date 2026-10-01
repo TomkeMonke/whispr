@@ -14,6 +14,7 @@ tray.
 - [x] M3 - local Whisper (whisper.cpp), model download, fallback routing
 - [x] M2 - global hotkey (tap or hold), auto-paste, tray, recording overlay
 - [x] AI cleanup pass (punctuation, fillers, spoken corrections), custom vocabulary
+- [x] English or Polish, a toggle in settings
 - [ ] Later - macOS pass
 
 ## Prerequisites
@@ -141,10 +142,36 @@ keeps the pre-cleanup text under "Before cleanup".
 context prompt in both engines, and to the cleanup model as spelling rules: in
 testing "drill are" and "post hog" came back as "drillr" and "PostHog".
 
-The live test runs the cleanup on sample dictations with the saved key:
-`cargo test --lib -- --ignored cleanup_live --nocapture`.
+The live test runs the cleanup on sample dictations, English and Polish, with
+the saved key: `cargo test --lib -- --ignored cleanup_live --nocapture`.
 
-**Local models are the quantised English-only builds.** Measured on a 6 s clip:
+**Polish** is a toggle in settings (Dictation, Language). It pins Whisper's
+language in both engines and switches the cleanup pass to a Polish editor:
+Polish fillers ("yyy", "jakby", "w sensie"), corrections ("nie, czekaj", "a
+właściwie", "skreśl to"), Polish comma rules ("Myślę, że..."), and English
+technical words such as commit or build left in English. Its instructions say
+twice never to translate, the one failure an English prompt invites. It takes
+the same 0.2-1 s as English.
+
+Measured on 40 clips of real Polish speech (FLEURS dev set, 344 s):
+
+| engine | WER | per clip |
+|---|---|---|
+| Groq `whisper-large-v3-turbo` | 6.9% | 0.48 s |
+| Groq `whisper-large-v3` | 6.6% | 0.69 s |
+| local Turbo, GTX 1660 SUPER | 7.3% | 2.1 s |
+
+About 5 of the errors in each row are numbers written as digits ("80%" for
+"osiemdziesiąt procent"), and diacritics account for under half a point, so
+Turbo stays the cloud default. A Polish style hint as Whisper's prompt
+measured no better than none. The `.en` local models cannot transcribe Polish
+at all: they are marked English-only, kept out of the route, and settings
+points to Turbo instead. Whisper's best-known Polish hallucination, the
+subtitle credit "Napisy stworzone przez społeczność Amara.org", is dropped.
+`bench.rs` reruns the numbers on any folder of `NN.wav` + `NN.txt` clips.
+
+**Local models are quantised; Base and Small are English-only builds,** Turbo
+is multilingual. Measured on a 6 s clip:
 
 | model | desktop CPU | GTX 1660 SUPER (CUDA) |
 |---|---|---|
