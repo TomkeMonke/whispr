@@ -3,6 +3,7 @@ name = "whispr"
 version = "0.1.0"
 description = "Personal dictation app - local Whisper + Groq cloud"
 authors = ["tomek"]
+license-file = "../LICENSE"
 edition = "2021"
 
 [lib]

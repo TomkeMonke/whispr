@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Private machine notes for Claude sessions
+CLAUDE.md
