@@ -6,13 +6,20 @@
 //! It must never take focus - the transcript is pasted into whatever window
 //! has focus, so the overlay stealing it would paste into the overlay. It is
 //! also click-through, so it never blocks the app underneath.
+//!
+//! The window itself is never hidden: WebView2 stops painting a window that
+//! has been hidden for a while, and the pill then came back as an empty,
+//! transparent window. Instead the window stays shown and the page fades the
+//! pill in and out on the `overlay-visible` event.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
 
 pub const LABEL: &str = "overlay";
+/// Tells the page to show (true) or hide (false) the pill.
+const VISIBLE_EVENT: &str = "overlay-visible";
 
 /// Logical size of the pill, matched by overlay.html.
 const WIDTH: f64 = 200.0;
@@ -35,7 +42,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .skip_taskbar(true)
         .focused(false)
         .focusable(false)
-        .visible(false);
+        .visible(true);
     // Transparency needs a private API on macOS; see the macOS pass.
     #[cfg(not(target_os = "macos"))]
     let builder = builder.transparent(true);
@@ -66,7 +73,9 @@ pub fn show(app: &AppHandle) {
         );
         let _ = window.set_position(position);
     }
+    // Already shown; this only covers anything that hid it from outside.
     let _ = window.show();
+    let _ = app.emit_to(LABEL, VISIBLE_EVENT, true);
 }
 
 /// Hide after `delay`, unless another session has shown the overlay since.
@@ -76,9 +85,7 @@ pub fn hide_after(app: &AppHandle, delay: Duration) {
     std::thread::spawn(move || {
         std::thread::sleep(delay);
         if GENERATION.load(Ordering::SeqCst) == generation {
-            if let Some(window) = app.get_webview_window(LABEL) {
-                let _ = window.hide();
-            }
+            let _ = app.emit_to(LABEL, VISIBLE_EVENT, false);
         }
     });
 }

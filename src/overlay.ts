@@ -1,7 +1,9 @@
 import { listen } from "@tauri-apps/api/event";
 import { createFlow } from "./flow";
 
-// Rust shows and hides this window; the page only reflects the phase.
+// The window always stays shown (WebView2 stops painting a window left hidden
+// for a while), so Rust shows and hides the pill instead, through
+// `overlay-visible`. Otherwise the page only reflects the phase.
 
 type Phase = "recording" | "transcribing" | "done" | "error";
 
@@ -25,6 +27,11 @@ function setPhase(phase: Phase, text: string) {
     flow.stop();
   }
 }
+
+listen<boolean>("overlay-visible", ({ payload }) => {
+  pill.classList.toggle("shown", payload);
+  if (!payload) flow.stop();
+});
 
 listen<DictationEvent>("dictation", ({ payload }) => {
   switch (payload.phase) {

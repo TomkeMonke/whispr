@@ -37,6 +37,12 @@ body {
   font-size: 13px;
   letter-spacing: 0.01em;
   transition: border-color 200ms ease;
+  /* Hidden until Rust says a session started; see overlay.ts. */
+  visibility: hidden;
+}
+
+.pill.shown {
+  visibility: visible;
 }
 
 /* Listening: just the dot and the waveform, centred, and the edge and a soft
