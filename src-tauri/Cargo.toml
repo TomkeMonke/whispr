@@ -27,6 +27,9 @@ serde_json = "1"
 # more bookkeeping (and more transitive deps) than a one-shot whole-clip convert needs.
 cpal = "0.18.2"
 hound = "3.5.1"
+# meeting recordings are saved as MP3. Builds LAME from source with the C
+# compiler already needed for whisper.cpp. LAME is LGPL.
+mp3lame-encoder = "0.3.0"
 
 # groq client. native-tls = SChannel on Windows, Security.framework on macOS.
 # NB: in reqwest 0.13 the `default-tls` feature means rustls+aws-lc-rs, which

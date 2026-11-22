@@ -1087,3 +1087,110 @@ progress::-webkit-progress-value {
 :root[data-theme="light"] .icon-btn .moon {
   display: block;
 }
+
+/* record page ------------------------------------------------------------- */
+
+/* Red dot on the Record nav item while a recording runs. */
+.nav-live {
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-soft);
+  animation: live-blink 1.4s ease-in-out infinite;
+}
+
+@keyframes live-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.tape-clock {
+  flex: none;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.recorder[data-phase="recording"] .tape-clock {
+  color: var(--text);
+}
+
+.meter-sm {
+  height: 20px;
+}
+
+.meter-sm.is-live i {
+  background: var(--text);
+}
+
+.tape-note {
+  margin: -6px 0 0;
+  padding-left: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.tapes-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.tapes-folder {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tapes {
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+
+.tape {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 16px;
+}
+
+.tape:hover {
+  background: var(--surface-hover);
+}
+
+.tape-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.tape-meta {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tapes-empty {
+  margin: 0;
+  padding: 18px 16px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.tapes-empty[hidden] {
+  display: none;
+}

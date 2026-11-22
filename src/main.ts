@@ -6,7 +6,13 @@ import { createFlow } from "./flow";
 
 type Phase = "idle" | "recording" | "transcribing";
 
-type View = "dictate" | "settings";
+type View = "dictate" | "record" | "settings";
+
+const VIEW_TITLES: Record<View, string> = {
+  dictate: "Dictate",
+  record: "Record",
+  settings: "Settings",
+};
 
 type Theme = "dark" | "light";
 
@@ -27,6 +33,34 @@ interface Settings {
   auto_paste: boolean;
   cleanup: boolean;
   vocabulary: string[];
+  tape_mic: boolean;
+  tape_system: boolean;
+}
+
+interface TapeStatus {
+  recording: boolean;
+  elapsed_secs: number;
+  path: string | null;
+  mic: boolean;
+  system: boolean;
+}
+
+interface TapeFinished {
+  path: string;
+  duration_secs: number;
+  bytes: number;
+}
+
+interface SavedTape {
+  name: string;
+  path: string;
+  bytes: number;
+  duration_secs: number;
+}
+
+interface Tapes {
+  folder: string;
+  recordings: SavedTape[];
 }
 
 interface Transcript {
@@ -120,6 +154,24 @@ const els = {
   original: $<HTMLDetailsElement>("original"),
   originalText: $<HTMLParagraphElement>("original-text"),
   kbdHint: $<HTMLElement>("kbd-hint"),
+  recordView: $<HTMLElement>("view-record"),
+  navRecord: $<HTMLButtonElement>("nav-record"),
+  navRecordDot: $<HTMLElement>("nav-record-dot"),
+  tapeRecorder: $<HTMLElement>("tape-recorder"),
+  tapeRecord: $<HTMLButtonElement>("tape-record"),
+  tapeStatus: $<HTMLElement>("tape-status"),
+  tapeSub: $<HTMLElement>("tape-sub"),
+  tapeClock: $<HTMLElement>("tape-clock"),
+  tapeError: $<HTMLElement>("tape-error"),
+  tapeMic: $<HTMLInputElement>("tape-mic"),
+  tapeMicHint: $<HTMLElement>("tape-mic-hint"),
+  tapeSystem: $<HTMLInputElement>("tape-system"),
+  tapeMicMeter: $<HTMLElement>("tape-mic-meter"),
+  tapeSystemMeter: $<HTMLElement>("tape-system-meter"),
+  tapes: $<HTMLUListElement>("tapes"),
+  tapesEmpty: $<HTMLElement>("tapes-empty"),
+  tapesFolder: $<HTMLElement>("tapes-folder"),
+  tapesOpen: $<HTMLButtonElement>("tapes-open"),
 };
 
 let phase: Phase = "idle";
@@ -133,6 +185,8 @@ let settings: Settings = {
   auto_paste: true,
   cleanup: true,
   vocabulary: [],
+  tape_mic: true,
+  tape_system: true,
 };
 let models: ModelInfo[] = [];
 let downloading = false;
@@ -196,10 +250,13 @@ function chip(text: string, tone?: "warn" | "note"): HTMLElement {
 function showView(next: View) {
   view = next;
   els.dictate.hidden = next !== "dictate";
+  els.recordView.hidden = next !== "record";
   els.settings.hidden = next !== "settings";
   els.navDictate.classList.toggle("is-active", next === "dictate");
+  els.navRecord.classList.toggle("is-active", next === "record");
   els.navSettings.classList.toggle("is-active", next === "settings");
-  els.viewTitle.textContent = next === "dictate" ? "Dictate" : "Settings";
+  els.viewTitle.textContent = VIEW_TITLES[next];
+  if (next === "record") loadTapes();
 }
 
 // --- actions ---------------------------------------------------------------
@@ -473,6 +530,8 @@ async function persistSettings() {
     auto_paste: els.autoPaste.checked,
     cleanup: els.cleanup.checked,
     vocabulary: els.vocabulary.value.split(/[\n,]/),
+    tape_mic: els.tapeMic.checked,
+    tape_system: els.tapeSystem.checked,
   };
   try {
     await invoke("save_settings", { settings });
@@ -498,12 +557,148 @@ async function setLanguage(language: Language) {
   await persistSettings();
 }
 
+// --- meeting recordings ----------------------------------------------------
+
+const tapeMicFlow = createFlow(els.tapeMicMeter, 14, els.tapeMicMeter, "tape_mic_level");
+const tapeSystemFlow = createFlow(els.tapeSystemMeter, 14, els.tapeSystemMeter, "tape_system_level");
+let tapeRecording = false;
+let tapeStartedAt = 0;
+let tapeClockTimer: number | undefined;
+
+/** 75 s -> "1:15", 3725 s -> "1:02:05". */
+function clock(secs: number): string {
+  const s = Math.floor(secs);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+/** Recording sizes: KB under a megabyte, so a short file never reads "0 MB". */
+const fileSize = (bytes: number) =>
+  bytes < 1_000_000 ? `${Math.max(1, Math.round(bytes / 1000))} KB` : megabytes(bytes);
+
+const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
+function showTapeError(message: string | null) {
+  els.tapeError.textContent = message ?? "";
+  els.tapeError.hidden = message === null;
+}
+
+/** `saving`: the stop is in flight and the file is being finished. */
+function renderTape(status: TapeStatus | null, saving = false) {
+  tapeRecording = status?.recording ?? false;
+  els.tapeRecorder.dataset.phase = saving ? "transcribing" : tapeRecording ? "recording" : "idle";
+  els.tapeRecord.disabled = saving;
+  els.tapeRecord.setAttribute("aria-label", tapeRecording ? "Stop recording" : "Start recording");
+  els.navRecordDot.hidden = !tapeRecording;
+  els.tapeMic.disabled = els.tapeSystem.disabled = tapeRecording || saving;
+
+  if (tapeClockTimer !== undefined) clearInterval(tapeClockTimer);
+  tapeClockTimer = undefined;
+  tapeMicFlow.stop();
+  tapeSystemFlow.stop();
+  els.tapeMicMeter.classList.remove("is-live");
+  els.tapeSystemMeter.classList.remove("is-live");
+
+  if (saving) {
+    els.tapeStatus.textContent = "Saving...";
+    return;
+  }
+  if (!tapeRecording || !status) return;
+
+  tapeStartedAt = performance.now() - status.elapsed_secs * 1000;
+  const tick = () => {
+    els.tapeClock.textContent = clock((performance.now() - tapeStartedAt) / 1000);
+  };
+  tick();
+  tapeClockTimer = window.setInterval(tick, 250);
+  els.tapeStatus.textContent = "Recording";
+  els.tapeSub.textContent = status.path ? fileName(status.path) : "";
+  if (status.mic) {
+    tapeMicFlow.start();
+    els.tapeMicMeter.classList.add("is-live");
+  }
+  if (status.system) {
+    tapeSystemFlow.start();
+    els.tapeSystemMeter.classList.add("is-live");
+  }
+}
+
+function renderTapeMicHint() {
+  els.tapeMicHint.textContent = `What you say, through ${
+    settings.microphone ?? "the default microphone"
+  }. Change it on the Dictate page`;
+}
+
+async function toggleTape() {
+  showTapeError(null);
+  if (!tapeRecording) {
+    try {
+      renderTape(await invoke<TapeStatus>("tape_start"));
+    } catch (e) {
+      renderTape(null);
+      showTapeError(String(e));
+    }
+    return;
+  }
+  renderTape(null, true);
+  try {
+    const done = await invoke<TapeFinished>("tape_stop");
+    renderTape(null);
+    els.tapeStatus.textContent = "Saved";
+    els.tapeSub.textContent = `${fileName(done.path)} - ${fileSize(done.bytes)}`;
+    els.tapeClock.textContent = clock(done.duration_secs);
+  } catch (e) {
+    renderTape(null);
+    showTapeError(String(e));
+    els.tapeStatus.textContent = "Failed";
+  }
+  await loadTapes();
+}
+
+async function loadTapes() {
+  try {
+    const t = await invoke<Tapes>("list_tapes");
+    els.tapesFolder.textContent = t.folder;
+    els.tapesFolder.title = t.folder;
+    els.tapesEmpty.hidden = t.recordings.length > 0;
+    els.tapes.replaceChildren(
+      ...t.recordings.map((r) => {
+        const li = document.createElement("li");
+        li.className = "tape";
+        const name = document.createElement("span");
+        name.className = "tape-name";
+        name.textContent = r.name.replace(/\.mp3$/i, "");
+        name.title = r.path;
+        const meta = document.createElement("span");
+        meta.className = "tape-meta";
+        meta.textContent = `${clock(r.duration_secs)} - ${fileSize(r.bytes)}`;
+        const show = document.createElement("button");
+        show.className = "btn btn-secondary btn-sm";
+        show.type = "button";
+        show.textContent = "Show";
+        show.addEventListener("click", () =>
+          invoke("reveal_tape", { path: r.path }).catch((e) => showTapeError(String(e))),
+        );
+        li.append(name, meta, show);
+        return li;
+      }),
+    );
+  } catch (e) {
+    showTapeError(String(e));
+  }
+}
+
 // --- wiring ----------------------------------------------------------------
 
 els.record.addEventListener("click", toggleRecording);
 els.copy.addEventListener("click", copyTranscript);
 els.saveKey.addEventListener("click", saveApiKey);
-els.mic.addEventListener("change", persistSettings);
+els.mic.addEventListener("change", async () => {
+  await persistSettings();
+  renderTapeMicHint();
+});
 els.model.addEventListener("change", persistSettings);
 els.engine.addEventListener("change", persistSettings);
 els.localModel.addEventListener("change", persistSettings);
@@ -541,6 +736,13 @@ els.apiKey.addEventListener("keydown", (e) => {
 
 els.navDictate.addEventListener("click", () => showView("dictate"));
 els.navSettings.addEventListener("click", () => showView("settings"));
+els.navRecord.addEventListener("click", () => showView("record"));
+els.tapeRecord.addEventListener("click", toggleTape);
+els.tapeMic.addEventListener("change", persistSettings);
+els.tapeSystem.addEventListener("change", persistSettings);
+els.tapesOpen.addEventListener("click", () =>
+  invoke("open_tapes_folder").catch((e) => showTapeError(String(e))),
+);
 
 const appWindow = getCurrentWindow();
 $("win-min").addEventListener("click", () => appWindow.minimize());
@@ -593,7 +795,7 @@ document.addEventListener("keydown", (e) => {
     showView("settings");
     return;
   }
-  if (e.key === "Escape" && view === "settings") {
+  if (e.key === "Escape" && view !== "dictate") {
     showView("dictate");
     return;
   }
@@ -618,6 +820,11 @@ async function init() {
     els.cleanup.checked = settings.cleanup;
     renderLanguage();
     els.vocabulary.value = settings.vocabulary.join("\n");
+    els.tapeMic.checked = settings.tape_mic;
+    els.tapeSystem.checked = settings.tape_system;
+    renderTapeMicHint();
+    // A recording keeps going with the window closed; pick it back up.
+    renderTape(await invoke<TapeStatus>("tape_status"));
     await loadMicrophones();
     await loadLocalModels();
     await loadAutostart();

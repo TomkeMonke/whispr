@@ -40,6 +40,10 @@ pub struct Settings {
     pub cleanup: bool,
     /// Names and jargon to spell right: a hint to Whisper, and a rule for cleanup.
     pub vocabulary: Vec<String>,
+    /// Meeting recordings take in the microphone (the one picked for dictation).
+    pub tape_mic: bool,
+    /// Meeting recordings take in what the computer plays.
+    pub tape_system: bool,
 }
 
 impl Default for Settings {
@@ -54,6 +58,8 @@ impl Default for Settings {
             auto_paste: true,
             cleanup: true,
             vocabulary: Vec::new(),
+            tape_mic: true,
+            tape_system: true,
         }
     }
 }
@@ -263,6 +269,8 @@ mod tests {
             auto_paste: false,
             cleanup: false,
             vocabulary: vec!["Tauri".into()],
+            tape_mic: true,
+            tape_system: false,
         };
         save(&dir, &original).unwrap();
         let loaded = load(&dir);
@@ -272,6 +280,7 @@ mod tests {
         assert_eq!(loaded.local_model, "base.en");
         assert_eq!(loaded.hotkey, "Ctrl+Alt+D");
         assert!(!loaded.auto_paste);
+        assert!(loaded.tape_mic && !loaded.tape_system);
         assert!(!loaded.cleanup);
         assert_eq!(loaded.vocabulary, vec!["Tauri"]);
         std::fs::remove_dir_all(&dir).ok();

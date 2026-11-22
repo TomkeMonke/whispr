@@ -57,6 +57,8 @@ const MIN_VOICED_RUN_SECS: f32 = 0.1;
 pub enum AudioError {
     #[error("no microphone available")]
     NoDevice,
+    #[error("no speakers or headphones to record from")]
+    NoOutputDevice,
     #[error("microphone '{0}' not found")]
     UnknownDevice(String),
     #[error("unsupported sample format: {0:?}")]
@@ -260,65 +262,18 @@ fn run_capture(
         }};
     }
 
-    let host = cpal::default_host();
-
-    let device = match &device_name {
-        Some(name) => {
-            let found = host
-                .input_devices()
-                .ok()
-                .and_then(|mut it| it.find(|d| d.to_string() == *name));
-            match found {
-                Some(d) => d,
-                None => bail!(AudioError::UnknownDevice(name.clone())),
-            }
-        }
-        None => match host.default_input_device() {
-            Some(d) => d,
-            None => bail!(AudioError::NoDevice),
-        },
+    let device = match find_input_device(device_name.as_deref()) {
+        Ok(d) => d,
+        Err(e) => bail!(e),
     };
-
-    let supported = match device.default_input_config() {
-        Ok(c) => c,
-        Err(e) => bail!(AudioError::Device(e)),
-    };
-
-    let sample_rate = supported.sample_rate();
-    let channels = supported.channels() as usize;
-    let format = supported.sample_format();
-    let config: StreamConfig = supported.config();
 
     let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
 
-    let stream = {
-        let buffer = Arc::clone(&buffer);
-        let level = Arc::clone(&level);
-        let built = match format {
-            SampleFormat::F32 => build_stream::<f32>(&device, config, channels, buffer, level, |s| s),
-            SampleFormat::I16 => build_stream::<i16>(&device, config, channels, buffer, level, |s| {
-                s as f32 / -(i16::MIN as f32)
-            }),
-            SampleFormat::I32 => build_stream::<i32>(&device, config, channels, buffer, level, |s| {
-                s as f32 / -(i32::MIN as f32)
-            }),
-            SampleFormat::I8 => build_stream::<i8>(&device, config, channels, buffer, level, |s| {
-                s as f32 / -(i8::MIN as f32)
-            }),
-            SampleFormat::U8 => build_stream::<u8>(&device, config, channels, buffer, level, |s| {
-                (s as f32 - 128.0) / 128.0
-            }),
-            other => bail!(AudioError::UnsupportedFormat(other)),
+    let (stream, sample_rate) =
+        match open_stream(&device, Source::Microphone, Arc::clone(&buffer), Arc::clone(&level)) {
+            Ok(opened) => opened,
+            Err(e) => bail!(e),
         };
-        match built {
-            Ok(s) => s,
-            Err(e) => bail!(AudioError::Device(e)),
-        }
-    };
-
-    if let Err(e) = stream.play() {
-        bail!(AudioError::Device(e));
-    }
 
     // Live from here on.
     let _ = ready_tx.send(Ok(()));
@@ -330,6 +285,77 @@ fn run_capture(
 
     let mono = std::mem::take(&mut *buffer.lock().unwrap());
     Ok(Captured { mono, sample_rate })
+}
+
+/// What a stream listens to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Microphone,
+    /// Whatever the speakers play, captured from an output device. On WASAPI,
+    /// opening an output device as an input turns on loopback capture.
+    Loopback,
+}
+
+/// The named microphone, or the system default for `None`.
+pub fn find_input_device(name: Option<&str>) -> Result<cpal::Device, AudioError> {
+    let host = cpal::default_host();
+    match name {
+        Some(name) => host
+            .input_devices()
+            .ok()
+            .and_then(|mut it| it.find(|d| d.to_string() == name))
+            .ok_or_else(|| AudioError::UnknownDevice(name.to_string())),
+        None => host.default_input_device().ok_or(AudioError::NoDevice),
+    }
+}
+
+/// The device the system plays through, for loopback capture.
+pub fn default_output_device() -> Result<cpal::Device, AudioError> {
+    cpal::default_host()
+        .default_output_device()
+        .ok_or(AudioError::NoOutputDevice)
+}
+
+/// Open `device` and start it. Every callback is downmixed to mono and
+/// appended to `buffer`, at the returned sample rate; `level` carries the
+/// latest callback's peak.
+///
+/// The stream is `!Send`: keep it on the thread that opened it, and drop it
+/// there to stop.
+pub fn open_stream(
+    device: &cpal::Device,
+    source: Source,
+    buffer: Arc<Mutex<Vec<f32>>>,
+    level: Arc<AtomicU32>,
+) -> Result<(cpal::Stream, u32), AudioError> {
+    let supported = match source {
+        Source::Microphone => device.default_input_config()?,
+        Source::Loopback => device.default_output_config()?,
+    };
+
+    let sample_rate = supported.sample_rate();
+    let channels = supported.channels() as usize;
+    let format = supported.sample_format();
+    let config: StreamConfig = supported.config();
+
+    let stream = match format {
+        SampleFormat::F32 => build_stream::<f32>(device, config, channels, buffer, level, |s| s),
+        SampleFormat::I16 => build_stream::<i16>(device, config, channels, buffer, level, |s| {
+            s as f32 / -(i16::MIN as f32)
+        }),
+        SampleFormat::I32 => build_stream::<i32>(device, config, channels, buffer, level, |s| {
+            s as f32 / -(i32::MIN as f32)
+        }),
+        SampleFormat::I8 => build_stream::<i8>(device, config, channels, buffer, level, |s| {
+            s as f32 / -(i8::MIN as f32)
+        }),
+        SampleFormat::U8 => build_stream::<u8>(device, config, channels, buffer, level, |s| {
+            (s as f32 - 128.0) / 128.0
+        }),
+        other => return Err(AudioError::UnsupportedFormat(other)),
+    }?;
+    stream.play()?;
+    Ok((stream, sample_rate))
 }
 
 fn build_stream<T>(

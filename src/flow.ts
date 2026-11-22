@@ -17,11 +17,14 @@ export interface Flow {
 /**
  * Fills `container` with `count` bars. The smoothed level is also published as
  * `--flow-level` (0-1) on `levelHost`, for CSS that pulses along with it.
+ * `levelCommand` is the backend command polled for the level: dictation's mic
+ * by default.
  */
 export function createFlow(
   container: HTMLElement,
   count: number,
   levelHost: HTMLElement = container,
+  levelCommand = "input_level",
 ): Flow {
   const bars = Array.from({ length: count }, () => {
     const bar = document.createElement("i");
@@ -41,7 +44,7 @@ export function createFlow(
 
   const poll = async () => {
     try {
-      const raw = await invoke<number>("input_level");
+      const raw = await invoke<number>(levelCommand);
       // A cube root opens up the quiet end, then the gate drops room noise.
       const eased = Math.min(1, Math.cbrt(raw) * 1.1);
       target = Math.max(0, (eased - GATE) / (1 - GATE));

@@ -16,6 +16,7 @@ mod overlay;
 mod paste;
 mod secrets;
 mod settings;
+mod tape;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +29,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
+use tauri_plugin_opener::OpenerExt;
 
 use audio::Recorder;
 use settings::{Engine, Settings};
@@ -52,6 +54,10 @@ pub struct AppState {
     config_dir: PathBuf,
     recordings_dir: PathBuf,
     models_dir: PathBuf,
+    /// Meeting recordings: mic and computer audio to MP3.
+    tape: tape::Tape,
+    /// Where meeting recordings are saved: Documents\whispr recordings.
+    tapes_dir: PathBuf,
 }
 
 impl AppState {
@@ -457,6 +463,95 @@ async fn transcribe_capture(state: &AppState) -> Result<Transcript, String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Meeting recordings
+// ---------------------------------------------------------------------------
+
+/// Recordings listed in the window.
+const LIST_TAPES: usize = 20;
+
+#[tauri::command]
+fn tape_start(app: AppHandle, state: State<'_, AppState>) -> Result<tape::TapeStatus, String> {
+    let s = state.settings.lock().unwrap().clone();
+    let plan = tape::Plan {
+        microphone: s.tape_mic.then_some(s.microphone),
+        system: s.tape_system,
+        path: tape::next_path(&state.tapes_dir),
+    };
+    state.tape.start(plan).map_err(|e| e.to_string())?;
+    set_tray_tooltip(&app, "whispr - recording");
+    Ok(state.tape.status())
+}
+
+#[tauri::command]
+fn tape_stop(app: AppHandle, state: State<'_, AppState>) -> Result<tape::Finished, String> {
+    let result = state.tape.stop().map_err(|e| e.to_string());
+    set_tray_tooltip(&app, "whispr");
+    result
+}
+
+#[tauri::command]
+fn tape_status(state: State<'_, AppState>) -> tape::TapeStatus {
+    state.tape.status()
+}
+
+#[tauri::command]
+fn tape_mic_level(state: State<'_, AppState>) -> f32 {
+    state.tape.mic_level()
+}
+
+#[tauri::command]
+fn tape_system_level(state: State<'_, AppState>) -> f32 {
+    state.tape.system_level()
+}
+
+#[derive(Serialize)]
+struct Tapes {
+    folder: String,
+    recordings: Vec<tape::Saved>,
+}
+
+#[tauri::command]
+fn list_tapes(state: State<'_, AppState>) -> Tapes {
+    Tapes {
+        folder: state.tapes_dir.to_string_lossy().into_owned(),
+        recordings: tape::list(&state.tapes_dir, LIST_TAPES),
+    }
+}
+
+#[tauri::command]
+fn open_tapes_folder(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    std::fs::create_dir_all(&state.tapes_dir).map_err(|e| e.to_string())?;
+    app.opener()
+        .open_path(state.tapes_dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Show one recording selected in Explorer. Only files in the recordings folder.
+#[tauri::command]
+fn reveal_tape(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    if path.parent() != Some(state.tapes_dir.as_path()) {
+        return Err("not a whispr recording".into());
+    }
+    app.opener().reveal_item_in_dir(&path).map_err(|e| e.to_string())
+}
+
+fn set_tray_tooltip(app: &AppHandle, text: &str) {
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_tooltip(Some(text));
+    }
+}
+
+/// Quitting mid-meeting finishes the file instead of cutting it off.
+fn quit_app(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if state.tape.is_recording() {
+        let _ = state.tape.stop();
+    }
+    app.exit(0);
+}
+
 #[tauri::command]
 fn local_models(state: State<'_, AppState>) -> Vec<local::ModelInfo> {
     local::catalog(&state.models_dir)
@@ -640,7 +735,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
-            "quit" => app.exit(0),
+            "quit" => quit_app(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -703,6 +798,11 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             let recordings_dir = data_dir.join("recordings");
             let models_dir = data_dir.join("models");
+            let tapes_dir = app
+                .path()
+                .document_dir()
+                .map(|d| d.join("whispr recordings"))
+                .unwrap_or_else(|_| data_dir.join("meetings"));
             std::fs::create_dir_all(&config_dir).ok();
 
             let loaded = settings::load(&config_dir);
@@ -733,6 +833,8 @@ pub fn run() {
                 config_dir,
                 recordings_dir,
                 models_dir,
+                tape: tape::Tape::default(),
+                tapes_dir,
             });
 
             // A taken hotkey must not stop the app starting: the window still
@@ -773,6 +875,14 @@ pub fn run() {
             clear_api_key,
             get_autostart,
             set_autostart,
+            tape_start,
+            tape_stop,
+            tape_status,
+            tape_mic_level,
+            tape_system_level,
+            list_tapes,
+            open_tapes_folder,
+            reveal_tape,
         ])
         .run(tauri::generate_context!())
         .expect("error while running whispr");

@@ -47,6 +47,11 @@
             <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><path d="M12 19v3" /></svg>
             <span>Dictate</span>
           </button>
+          <button id="nav-record" class="nav-item" type="button" data-view="record">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3.5" /></svg>
+            <span>Record</span>
+            <span id="nav-record-dot" class="nav-live" hidden></span>
+          </button>
           <button id="nav-settings" class="nav-item" type="button" data-view="settings">
             <svg viewBox="0 0 24 24"><path d="M20 7h-9" /><path d="M14 17H5" /><circle cx="17" cy="17" r="3" /><circle cx="7" cy="7" r="3" /></svg>
             <span>Settings</span>
@@ -118,6 +123,63 @@
                 <summary>Before cleanup</summary>
                 <p id="original-text"></p>
               </details>
+            </div>
+          </section>
+
+          <!-- Record ----------------------------------------------------- -->
+          <section id="view-record" class="page" hidden>
+            <div id="tape-recorder" class="recorder" data-phase="idle">
+              <button id="tape-record" class="record" type="button" aria-label="Start recording">
+                <span class="dot"></span>
+                <span class="spinner"></span>
+              </button>
+              <div class="recorder-text">
+                <p id="tape-status" class="recorder-title">Ready to record</p>
+                <p id="tape-sub" class="recorder-sub">Saved as MP3, audio only</p>
+              </div>
+              <span id="tape-clock" class="tape-clock">0:00</span>
+            </div>
+
+            <p id="tape-error" class="error" hidden></p>
+
+            <div class="card">
+              <div class="row">
+                <div class="row-text">
+                  <label class="row-label" for="tape-mic">Microphone</label>
+                  <p id="tape-mic-hint" class="row-hint">What you say</p>
+                </div>
+                <div class="row-control">
+                  <div id="tape-mic-meter" class="meter meter-sm" aria-hidden="true"></div>
+                  <input id="tape-mic" class="switch" type="checkbox" />
+                </div>
+              </div>
+              <div class="row">
+                <div class="row-text">
+                  <label class="row-label" for="tape-system">Computer audio</label>
+                  <p class="row-hint">What you hear: the other side of a call, a video, anything that plays</p>
+                </div>
+                <div class="row-control">
+                  <div id="tape-system-meter" class="meter meter-sm" aria-hidden="true"></div>
+                  <input id="tape-system" class="switch" type="checkbox" />
+                </div>
+              </div>
+            </div>
+            <p class="tape-note">
+              With both on, wear headphones: through speakers your microphone hears the call
+              too, and it ends up in the file twice
+            </p>
+
+            <div class="card tapes-card">
+              <div class="card-header">
+                <span class="card-title">Recordings</span>
+                <span id="tapes-folder" class="tapes-folder"></span>
+                <button id="tapes-open" class="btn btn-secondary btn-sm" type="button">
+                  <svg viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" /></svg>
+                  <span>Open folder</span>
+                </button>
+              </div>
+              <ul id="tapes" class="tapes"></ul>
+              <p id="tapes-empty" class="tapes-empty">No recordings yet</p>
             </div>
           </section>
 
